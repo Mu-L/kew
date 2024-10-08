@@ -4,13 +4,13 @@
 
 Listen to music in the terminal.
 
-![Example screenshot](kew-screenshot.png)  
+![Example screenshot](images/kew-screenshot.png)  
 *Example screenshot running in Konsole: [Jenova 7: Lost Sci-Fi Movie Themes](https://jenova7.bandcamp.com/album/lost-sci-fi-movie-themes).*
 
 
   
   \
-kew (/kjuː/) is a command-line music player for Linux.
+kew (/kjuː/) is a terminal music player for Linux.
 
 ## Features
 
@@ -19,7 +19,8 @@ kew (/kjuː/) is a command-line music player for Linux.
  * Control the player with previous, next and pause.
  * Edit the playlist by adding and removing songs.
  * Supports gapless playback (between files of the same format and type).
- * Supports MP3, FLAC, MPEG-4 (AAC, M4A, MP4), OPUS, OGG and WAV audio.
+ * Supports MP3, FLAC, MPEG-4 (AAC, M4A), OPUS, OGG and WAV audio.
+ * Supports desktop events through MPRIS.
  * Private, no data is collected by kew.
 
 ## Installing
@@ -27,48 +28,24 @@ kew (/kjuː/) is a command-line music player for Linux.
 <a href="https://repology.org/project/kew/versions"><img src="https://repology.org/badge/vertical-allrepos/kew.svg" alt="Packaging status" align="right"></a>
 
 
- It's advised, if possible, to install from a package or from a release here on github and not from https://github.com/ravachol/kew.git or the install script, because the main branch can and will be unstable sometimes.
+### Installing with package managers
 
-### Installing in Debian, Ubuntu
-
-It's available from Ubuntu 24.04, Debian 13.
+kew is available from Ubuntu 24.04.
 
 ```bash
-$ apt install kew
+sudo apt install kew         (Debian, Ubuntu)
+sudo yay -S kew              (Arch Linux, Manjaro)
+sudo yay -S kew-git          (Arch Linux, Manjaro)
+sudo zypper install kew      (OpenSUSE)
+sudo pkg install kew         (FreeBSD)
+brew install kew             (Linux Only, No MacOS)
 ```
 
+### Standalone AppImage for musl systems
 
-### Installing via AUR
+If you are running a musl-based system, for instance Alpine Linux, you can download a standalone appImage of kew:
 
-On Arch Linux, and Arch-based distributions, kew can be found in the AUR. Install with pamac or an AUR helper like yay:
-
-```bash
-$ yay kew-git
-```
-
-Or
-
-```bash
-$ yay kew
-```
-
-### Installing via Brew
-
-For [Homebrew](https://brew.sh/) user, you can install [kew](https://formulae.brew.sh/formula/kew) with:
-
-```bash
-$ brew install kew
-```
-
-### Installing with quick install script
-
-To quickly install kew, just copy and paste this to your terminal (if you have curl installed):
-
-```bash
-sudo bash -c "curl https://raw.githubusercontent.com/ravachol/kew/main/install.sh | bash"
-```
-
-Please note that this script might do a system update before installing kew.
+https://github.com/ravachol/kew/releases/tag/stable-musl
 
 ### Building the project manually
 
@@ -77,7 +54,6 @@ kew dependencies are:
 * FFmpeg
 * FFTW
 * Chafa
-* FreeImage
 * libopus
 * opusfile
 * libvorbis
@@ -85,21 +61,55 @@ kew dependencies are:
 * glib2.0 and AVFormat. These should be installed with the others, if not install them.
 * libnotify (optional)
 
-Install FFmpeg, FFTW, Chafa and FreeImage using your distro's package manager. For instance:
+Install FFmpeg, FFTW and Chafa using your distro's package manager. For instance:
+
+#### For Debian/Ubuntu:
 
 ```bash
-apt install ffmpeg libfftw3-dev libopus-dev libopusfile-dev libvorbis-dev git gcc make libchafa-dev libfreeimage-dev libavformat-dev libglib2.0-dev libnotify-dev
-```
-Or:
+sudo apt install -y pkg-config ffmpeg libfftw3-dev libopus-dev libopusfile-dev libvorbis-dev git gcc make libchafa-dev libavformat-dev libnotify-dev
 
-```bash
-pacman -Syu ffmpeg fftw git gcc make chafa freeimage glib2 opus opusfile libvorbis libnotify
 ```
 
-Or (for Fedora for instance):
+#### For Arch Linux:
 
 ```bash
-dnf install -y pkg-config ffmpeg-free-devel fftw-devel opus-devel opusfile-devel libvorbis-devel git gcc make chafa-devel freeimage-devel libavformat-free-devel libnotify-devel libatomic
+sudo pacman -Syu --noconfirm --needed pkg-config ffmpeg fftw git gcc make chafa glib2 opus opusfile libvorbis libnotify
+```
+
+#### For Fedora:
+
+```bash
+dnf install -y pkg-config ffmpeg-free-devel fftw-devel opus-devel opusfile-devel libvorbis-devel git gcc make chafa-devel libavformat-free-devel libnotify-devel libatomic
+```
+
+#### For OpenSUSE:
+
+```bash
+sudo zypper install -y pkg-config ffmpeg fftw-devel opus-devel opusfile-devel libvorbis-devel git chafa-devel gcc make libavformat-devel libnotify-devel
+```
+
+#### For CentOS/RHEL:
+
+```bash
+sudo yum install -y pkgconfig ffmpeg fftw-devel opus-devel opusfile-devel libvorbis-devel git gcc make chafa-devel libavformat-devel libnotify-devel
+```
+
+#### For Solus
+
+```bash
+sudo eopkg install -y pkg-config ffmpeg fftw-devel opus-devel opusfile-devel libvorbis-devel git gcc make chafa-devel libavformat-devel libnotify-devel
+```
+
+#### For Guix
+
+```bash
+guix install pkg-config ffmpeg fftw git gcc make chafa libavformat opus opusfile libvorbis libnotify
+```
+
+#### For Void Linux
+
+```bash
+sudo xbps-install -y pkg-config ffmpeg fftw git gcc make chafa libavformat opus opusfile libvorbis libnotify-devel
 ```
 
 Notice that for some packages not only the library needs to be installed, but also development packages, for instance libopus-dev or opus-devel.
@@ -113,7 +123,7 @@ git clone https://github.com/ravachol/kew.git
 cd kew
 ```
 ```bash
-make
+make -ij4
 ```
 ```bash
 sudo make install
@@ -136,12 +146,9 @@ sudo make uninstall
 
 ## Usage
 
-In case you don't have a "Music" folder in your home folder, the first thing to do is to tell kew the path to your music library (you only need to do this once):
+Run kew. It will first help you set the path to your music folder, then show you that folder's contents.
 
-```bash
-kew path "/home/joe/Musik/"
-```
-Now run kew and provide a partial name of a track or directory:
+kew can also be told to play a certain music from the command line. It automatically creates a playlist based on a partial name of a track or directory:
 
 ```bash
 kew cure great
@@ -190,6 +197,8 @@ kew -e <song>, --exact (specifies you want an exact (but not case sensitive) mat
 
 kew . loads kew.m3u
 
+kew path "/home/joe/Musik/" (changes the path)
+
  ```
 
 Put single-quotes inside quotes "guns n' roses"
@@ -220,7 +229,11 @@ Put single-quotes inside quotes "guns n' roses"
 
 ## Configuration
 
-kew will create a config file, kewrc, in a kew folder in your default config directory for instance ~/.config/kew. There you can change key bindings, number of bars in the visualizer and whether to use the album cover for color, or your regular color scheme (default). You can also change the default color of the app here. To edit this file please make sure you quit kew first.
+kew will create a config file, kewrc, in a kew folder in your default config directory for instance ~/.config/kew. There you can change key bindings, number of bars in the visualizer and whether to use the album cover for color, or your regular color scheme. You can also change the default color of the app here. To edit this file please make sure you quit kew first.
+
+## Nerd Fonts
+
+kew looks better with Nerd Fonts: https://www.nerdfonts.com/.
 
 ## License
 

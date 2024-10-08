@@ -10,6 +10,10 @@ soundcommon.c
 
 #define MAX_DECODERS 2
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 bool allowNotifications = true;
 bool repeatEnabled = false;
 bool shuffleEnabled = false;
@@ -1148,51 +1152,20 @@ void activateSwitch(AudioData *pAudioData)
         pAudioData->switchFiles = true;
 }
 
-void sanitize_filepath(const char *input, char *sanitized, size_t size)
+bool isValidFilepath(const char *path)
 {
-        size_t i, j = 0;
+    if (path == NULL || strlen(path) == 0 || strlen(path) >= PATH_MAX)
+    {
+        return false;
+    }
 
-        if (input != NULL)
-        {
-                for (i = 0; i < strlen(input) && j < size - 1; ++i)
-                {
-                        if (isalnum((unsigned char)input[i]) || strchr(" :[]()/.,?!-", input[i]))
-                        {
-                                sanitized[j++] = input[i];
-                        }
-                }
-        }
+    // Check if the path can be accessed (exists)
+    if (access(path, F_OK) != 0)
+    {
+        return false;  // Path doesn't exist or is inaccessible
+    }
 
-        sanitized[j] = '\0';
-}
-
-char *removeBlacklistedChars(const char *input, const char *blacklist)
-{
-        if (!input || !blacklist)
-        {
-                return NULL;
-        }
-
-        char *output = calloc(strlen(input) + 1, sizeof(char));
-        if (!output)
-        {
-                perror("Failed to allocate memory");
-                exit(EXIT_FAILURE);
-        }
-
-        const char *in_ptr = input;
-        char *out_ptr = output;
-        while (*in_ptr)
-        {
-                // If the current character is not in the blacklist, copy it to the output
-                if (!strchr(blacklist, *in_ptr))
-                {
-                        *out_ptr++ = *in_ptr;
-                }
-                in_ptr++;
-        }
-
-        return output;
+    return true;  // Valid path that exists
 }
 
 gint64 getLengthInMicroSec(double duration)
@@ -1203,82 +1176,118 @@ gint64 getLengthInMicroSec(double duration)
 #ifdef USE_LIBNOTIFY
 void onNotificationClosed(NotifyNotification *notification, gpointer user_data)
 {
-        (void)notification;
         (void)user_data;
 
+        g_object_unref(notification);
         previous_notification = NULL;
 }
 
-char *ensureNonEmpty(char *str)
+void removeBlacklistedChars(const char *input, const char *blacklist, char *output, size_t output_size)
+{
+        if (!input || !blacklist || !output || output_size == 0)
+        {
+                return;
+        }
+
+        const char *in_ptr = input;
+        char *out_ptr = output;
+        size_t chars_copied = 0;
+
+        while (*in_ptr && chars_copied < output_size - 1)
+        {
+                // Copy characters not in blacklist
+                if (!strchr(blacklist, *in_ptr))
+                {
+                        *out_ptr++ = *in_ptr;
+                        chars_copied++;
+                }
+                in_ptr++;
+        }
+
+        *out_ptr = '\0';
+}
+
+#define NOTIFICATION_INTERVAL_MICROSECONDS 500000 // 0.5 seconds
+
+struct timeval lastNotificationTime = {0, 0};
+static char sanitizedArtist[512];
+static char sanitizedTitle[512];
+
+int canShowNotification()
+{
+        struct timeval now;
+        gettimeofday(&now, NULL);
+
+        long seconds = now.tv_sec - lastNotificationTime.tv_sec;
+        long microseconds = now.tv_usec - lastNotificationTime.tv_usec;
+        long elapsed = seconds * 1000000 + microseconds; // Total elapsed time in microseconds
+
+        if (elapsed >= NOTIFICATION_INTERVAL_MICROSECONDS)
+        {
+                lastNotificationTime = now;
+                return 1;
+        }
+        return 0;
+}
+
+void ensureNonEmpty(char *str)
 {
         if (str == NULL || str[0] == '\0')
         {
-                if (str)
-                {
-                        free(str);
-                }
-
-                str = (char *)malloc(2);
-                if (str)
-                {
-                        strcpy(str, " ");
-                }
+                str[0] = ' ';
+                str[1] = '\0';
         }
-        return str;
 }
 
 int displaySongNotification(const char *artist, const char *title, const char *cover)
 {
-
-        if (!allowNotifications)
-        {
-                return 0;
-        }
-
-        char sanitized_cover[MAXPATHLEN];
-        const char *blacklist = "&;`|*~<>^()[]{}$\\\"";
-        char *sanitizedArtist = removeBlacklistedChars(artist, blacklist);
-        char *sanitizedTitle = removeBlacklistedChars(title, blacklist);
-
-        if (!sanitizedArtist || !sanitizedTitle)
-        {
-                if (sanitizedArtist)
-                        free(sanitizedArtist);
-                if (sanitizedTitle)
-                        free(sanitizedTitle);
-                return -1;
-        }
-
-        sanitizedArtist = ensureNonEmpty(sanitizedArtist);
-        sanitizedTitle = ensureNonEmpty(sanitizedTitle);
-
-        sanitize_filepath(cover, sanitized_cover, sizeof(sanitized_cover));
-
-        if (previous_notification == NULL)
-        {
-                previous_notification = notify_notification_new(sanitizedArtist, sanitizedTitle, sanitized_cover);
-
-                g_signal_connect(previous_notification, "closed", G_CALLBACK(onNotificationClosed), NULL);
-        }
-        else
-        {
-                notify_notification_update(previous_notification, sanitizedArtist, sanitizedTitle, sanitized_cover);
-        }
-
-        GError *error = NULL;
-        if (!notify_notification_show(previous_notification, &error))
-        {
-                if (error != NULL)
-                {
-                        fprintf(stderr, "Failed to show notification: %s\n", error->message);
-                        g_error_free(error);
-                }
-        }
-
-        free(sanitizedArtist);
-        free(sanitizedTitle);
-
+    if (!allowNotifications || !canShowNotification() || !notify_is_initted())
+    {
         return 0;
+    }
+
+    const char *blacklist = "&;`|*~<>^()[]{}$\\\"";
+
+    removeBlacklistedChars(artist, blacklist, sanitizedArtist, sizeof(sanitizedArtist));
+    removeBlacklistedChars(title, blacklist, sanitizedTitle, sizeof(sanitizedTitle));
+
+    ensureNonEmpty(sanitizedArtist);
+    ensureNonEmpty(sanitizedTitle);
+
+    int coverExists = isValidFilepath(cover);
+
+    if (previous_notification == NULL)
+    {
+        previous_notification = notify_notification_new(
+            sanitizedArtist,
+            sanitizedTitle,
+            coverExists ? cover : NULL
+        );
+
+        g_signal_connect(previous_notification, "closed", G_CALLBACK(onNotificationClosed), NULL);     
+    }
+    else
+    {
+        notify_notification_update(
+            previous_notification,
+            sanitizedArtist,
+            sanitizedTitle,
+            coverExists ? cover : NULL
+        );
+    }
+
+    GError *error = NULL;
+
+    if (!notify_notification_show(previous_notification, &error))
+    {
+        if (error != NULL)
+        {
+            fprintf(stderr, "Failed to show notification: %s\n", error->message);
+            g_error_free(error);
+        }
+    }
+
+    return 0;
 }
 #endif
 
@@ -1563,7 +1572,7 @@ void opus_read_pcm_frames(ma_data_source *pDataSource, void *pFramesOut, ma_uint
                 if (pthread_mutex_trylock(&dataSourceMutex) != 0)
                 {
                         return;
-                }             
+                }
 
                 // Check if a file switch is required
                 if (pAudioData->switchFiles)
@@ -1684,7 +1693,7 @@ void vorbis_read_pcm_frames(ma_data_source *pDataSource, void *pFramesOut, ma_ui
                 if (pthread_mutex_trylock(&dataSourceMutex) != 0)
                 {
                         return;
-                }             
+                }
 
                 // Check if a file switch is required
                 if (pAudioData->switchFiles)

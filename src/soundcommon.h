@@ -1,12 +1,13 @@
 #ifndef SOUND_COMMON_H
 #define SOUND_COMMON_H
 
-#include <FreeImage.h>
 #include <glib.h>
 #include <math.h>
 #include <miniaudio.h>
 #include <miniaudio_libopus.h>
 #include <miniaudio_libvorbis.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include "m4a.h"
 #include <stdatomic.h>
@@ -53,7 +54,9 @@ typedef struct
         unsigned char green;
         unsigned char blue;
         TagSettings *metadata;
-        FIBITMAP *cover;
+        unsigned char *cover;
+        int coverWidth;
+        int coverHeight;
         double duration;
         bool hasErrors;
 } SongData;
@@ -173,6 +176,7 @@ typedef struct
         char hideLogo[2];
         char hideHelp[2];
         char cacheLibrary[6];
+        char tabNext[6];
 } AppSettings;
 
 #endif

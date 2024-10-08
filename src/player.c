@@ -22,7 +22,7 @@ typedef struct
 } PixelData;
 #endif
 
-const char VERSION[] = "2.7.2";
+const char VERSION[] = "2.8.2";
 const int ABSOLUTE_MIN_WIDTH = 68;
 bool visualizerEnabled = true;
 bool coverEnabled = true;
@@ -255,11 +255,11 @@ int getYear(const char *dateString)
         return year;
 }
 
-int displayCover(FIBITMAP *cover, const char *coverArtPath, int height, bool ansii)
+int displayCover(unsigned char *cover, int coverWidth, int coverHeight, const char *coverArtPath, int height, bool ansii)
 {
         if (!ansii)
         {
-                printSquareBitmapCentered(cover, height);
+                printSquareBitmapCentered(cover, coverWidth, coverHeight, height);
         }
         else
         {
@@ -278,7 +278,7 @@ void printCover(SongData *songdata)
         if (songdata->cover != NULL && coverEnabled)
         {
                 clearScreen();
-                displayCover(songdata->cover, songdata->coverArtPath, preferredHeight, coverAnsi);
+                displayCover(songdata->cover, songdata->coverWidth, songdata->coverHeight, songdata->coverArtPath, preferredHeight, coverAnsi);
 
                 drewCover = true;
         }
@@ -674,6 +674,31 @@ void toggleShowLibrary()
         }
 }
 
+void tabNext()
+{
+        if (appState.currentView == PLAYLIST_VIEW)
+                appState.currentView = LIBRARY_VIEW;
+        else if (appState.currentView == LIBRARY_VIEW)
+        {
+                if (currentSong != NULL)
+                {
+                        appState.currentView = SONG_VIEW;
+                }
+                else
+                {
+                        appState.currentView = SEARCH_VIEW;
+                }
+        }
+        else if (appState.currentView == SONG_VIEW)
+                appState.currentView = SEARCH_VIEW;
+        else if (appState.currentView == SEARCH_VIEW)
+                appState.currentView = KEYBINDINGS_VIEW;
+        else if (appState.currentView == KEYBINDINGS_VIEW)
+                appState.currentView = PLAYLIST_VIEW;
+                
+        refresh = true;
+}
+
 void showTrack()
 {
         refresh = true;
@@ -982,6 +1007,15 @@ int displayTree(FileSystemEntry *root, int depth, int maxListSize, int maxNameWi
         char dirName[maxNameWidth + 1];
         char filename[maxNameWidth + 1];
         bool foundChosen = false;
+        int foundCurrent = 0;
+
+        if (currentSong != NULL && (strcmp(currentSong->song.filePath, root->fullPath) == 0))
+        {
+                foundCurrent = 1;
+        }
+
+        if (startLibIter < 0)
+                startLibIter = 0;
 
         if (libIter >= startLibIter + maxListSize)
         {
@@ -1007,13 +1041,7 @@ int displayTree(FileSystemEntry *root, int depth, int maxListSize, int maxNameWi
         if (allowChooseSongs)
         {
                 if (chosenLibRow >= libIter + libSongIter && libSongIter != 0)
-                {
-                        // if (chosenLibRow >= numDirectoryTreeEntries + numTopLevelSongs + numAudioChildren)
-                        // {
-                        //         startLibIter = numDirectoryTreeEntries + numTopLevelSongs + numAudioChildren - maxListSize;
-                        //         chosenLibRow = numDirectoryTreeEntries + numTopLevelSongs + numAudioChildren - 1;
-                        // }                                  
-
+                {                               
                         startLibIter = chosenLibRow - round(maxListSize / 2);
                 }
         }
@@ -1066,6 +1094,7 @@ int displayTree(FileSystemEntry *root, int depth, int maxListSize, int maxNameWi
                                                         setTextColor(enqueuedColor);
                                                 else
                                                         setColor();
+
                                                 printf("\x1b[7m * ");
                                         }
                                         else
@@ -1091,14 +1120,18 @@ int displayTree(FileSystemEntry *root, int depth, int maxListSize, int maxNameWi
                                 {
                                         if (root->isEnqueued)
                                         {
+
                                                 if (useProfileColors)
-                                                        setTextColor(enqueuedColor);
+                                                        printf("\033[%d;3%dm", foundCurrent, enqueuedColor);
                                                 else
-                                                        setColor();
+                                                        setColorAndWeight(foundCurrent);
+
                                                 printf(" * ");
                                         }
                                         else
+                                        {
                                                 printf("   ");
+                                        }
                                 }
 
                                 if (root->isDirectory)

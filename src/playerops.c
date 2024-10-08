@@ -453,7 +453,12 @@ SongData *getCurrentSongData(void)
         if (isCurrentSongDeleted())
                 return NULL;
 
-        SongData *songData = (audioData.currentFileIndex == 0) ? userData.songdataA : userData.songdataB;
+        SongData *songData = NULL;
+
+        bool isDeleted = determineCurrentSongData(&songData);
+
+        if (isDeleted)
+                return NULL;
 
         if (!isValidSong(songData))
                 return NULL;
@@ -1101,7 +1106,7 @@ int loadDecoder(SongData *songData, bool *songDataDeleted)
                                 result = prepareNextOpusDecoder(songData->filePath);
                         else if (endsWith(songData->filePath, "ogg"))
                                 result = prepareNextVorbisDecoder(songData->filePath);
-                        else if (endsWith(songData->filePath, "m4a") || endsWith(songData->filePath, "aac") || endsWith(songData->filePath, "mp4"))
+                        else if (endsWith(songData->filePath, "m4a") || endsWith(songData->filePath, "aac"))
                                 result = prepareNextM4aDecoder(songData->filePath);
                 }
         }

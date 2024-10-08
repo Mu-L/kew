@@ -19,7 +19,6 @@
 #include "visuals.h"
 #include "common_ui.h"
 
-extern const char VERSION[];
 extern bool coverEnabled;
 extern bool uiEnabled;
 extern bool coverAnsi;
@@ -46,7 +45,6 @@ extern int chosenLibRow;
 extern int chosenSearchResultRow;
 extern int chosenRow;
 extern int chosenNodeId;
-extern bool useProfileColors;
 extern int cacheLibrary;
 extern int numDirectoryTreeEntries;
 
@@ -95,5 +93,7 @@ void freeMainDirectoryTree();
 char *getLibraryFilePath();
 
 void resetChosenDir();
+
+void tabNext();
 
 #endif

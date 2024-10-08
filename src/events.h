@@ -1,3 +1,6 @@
+#ifndef EVENTS_H
+#define EVENTS_H
+
 #define MAX_SEQ_LEN 1024    // Maximum length of sequence buffer
 
 enum EventType
@@ -35,7 +38,8 @@ enum EventType
         EVENT_NEXTPAGE,
         EVENT_PREVPAGE,
         EVENT_REMOVE,
-        EVENT_SEARCH
+        EVENT_SEARCH,
+        EVENT_TABNEXT
 };
 
 struct Event
@@ -49,3 +53,5 @@ typedef struct
         char *seq;
         enum EventType eventType;
 } EventMapping;
+
+#endif

@@ -45,6 +45,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 #include <stdio.h>
 #include <string.h>
 #include <sys/param.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include "cache.h"
@@ -71,20 +72,18 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 
 FILE *logFile = NULL;
 struct winsize windowSize;
-static bool eventProcessed = false;
 char digitsPressed[MAX_SEQ_LEN];
 int digitsPressedCount = 0;
-int maxDigitsPressedCount = 9;
 static unsigned int updateCounter = 0;
 bool gPressed = false;
-bool loadingAudioData = false;
-bool goingToSong = false;
 bool startFromTop = false;
-bool exactSearch = false;
-AppSettings settings;
-int fuzzySearchThreshold = 2;
 int lastNotifiedId = -1;
 bool songWasRemoved = false;
+bool noPlaylist = false;
+
+bool exactSearch = false;
+int fuzzySearchThreshold = 2;
+int maxDigitsPressedCount = 9;
 
 bool isCooldownElapsed(int milliSeconds)
 {
@@ -110,10 +109,10 @@ struct Event processInput()
                 return event;
         }
 
-        if (isCooldownElapsed(COOLDOWN_MS) && !eventProcessed)
+        if (isCooldownElapsed(COOLDOWN_MS))
                 cooldownElapsed = true;
 
-        if (isCooldownElapsed(COOLDOWN2_MS) && !eventProcessed)
+        if (isCooldownElapsed(COOLDOWN2_MS))
                 cooldown2Elapsed = true;
 
         int seqLength = 0;
@@ -158,7 +157,6 @@ struct Event processInput()
         if (keyReleased)
                 return event;
 
-        eventProcessed = true;
         event.type = EVENT_NONE;
 
         strncpy(event.key, seq, MAX_SEQ_LEN);
@@ -167,12 +165,12 @@ struct Event processInput()
         {
                 if (strcmp(event.key, "\x7F") == 0 || strcmp(event.key, "\x08") == 0)
                 {
-                        removeFromSearchText(getLibrary());
+                        removeFromSearchText();
                         chosenSearchResultRow = 0;
                         fuzzySearch(getLibrary(), fuzzySearchThreshold);
                         event.type = EVENT_SEARCH;
                 }
-                else if (((strlen(event.key) == 1 && event.key[0] != '\033' && event.key[0] != '\n' && event.key[0] != '\r') || strcmp(event.key, " ") == 0 || (unsigned char)event.key[0] >= 0xC0))
+                else if (((strlen(event.key) == 1 && event.key[0] != '\033' && event.key[0] != '\n' && event.key[0] != '\t' && event.key[0] != '\r') || strcmp(event.key, " ") == 0 || (unsigned char)event.key[0] >= 0xC0))
                 {
                         addToSearchText(event.key);
                         chosenSearchResultRow = 0;
@@ -181,59 +179,8 @@ struct Event processInput()
                 }
         }
 
-        // Map keys to events
-        EventMapping keyMappings[] = {{settings.scrollUpAlt, EVENT_SCROLLPREV},
-                                      {settings.scrollDownAlt, EVENT_SCROLLNEXT},
-                                      {settings.nextTrackAlt, EVENT_NEXT},
-                                      {settings.previousTrackAlt, EVENT_PREV},
-                                      {settings.volumeUp, EVENT_VOLUME_UP},
-                                      {settings.volumeUpAlt, EVENT_VOLUME_UP},
-                                      {settings.volumeDown, EVENT_VOLUME_DOWN},
-                                      {settings.togglePause, EVENT_PLAY_PAUSE},
-                                      {settings.quit, EVENT_QUIT},
-                                      {settings.hardQuit, EVENT_QUIT},
-                                      {settings.toggleShuffle, EVENT_SHUFFLE},
-                                      {settings.toggleVisualizer, EVENT_TOGGLEVISUALIZER},
-                                      {settings.toggleAscii, EVENT_TOGGLEBLOCKS},
-                                      {settings.switchNumberedSong, EVENT_GOTOSONG},
-                                      {settings.seekBackward, EVENT_SEEKBACK},
-                                      {settings.seekForward, EVENT_SEEKFORWARD},
-                                      {settings.toggleRepeat, EVENT_TOGGLEREPEAT},
-                                      {settings.savePlaylist, EVENT_EXPORTPLAYLIST},
-                                      {settings.toggleColorsDerivedFrom, EVENT_TOGGLE_PROFILE_COLORS},
-                                      {settings.addToMainPlaylist, EVENT_ADDTOMAINPLAYLIST},
-                                      {settings.updateLibrary, EVENT_UPDATELIBRARY},
-                                      {settings.hardPlayPause, EVENT_PLAY_PAUSE},
-                                      {settings.hardPrev, EVENT_PREV},
-                                      {settings.hardNext, EVENT_NEXT},
-                                      {settings.hardSwitchNumberedSong, EVENT_GOTOSONG},
-                                      {settings.hardScrollUp, EVENT_SCROLLPREV},
-                                      {settings.hardScrollDown, EVENT_SCROLLNEXT},
-                                      {settings.hardShowPlaylist, EVENT_SHOWPLAYLIST},
-                                      {settings.hardShowPlaylistAlt, EVENT_SHOWPLAYLIST},
-                                      {settings.showPlaylistAlt, EVENT_SHOWPLAYLIST},
-                                      {settings.hardShowKeys, EVENT_SHOWKEYBINDINGS},
-                                      {settings.hardShowKeysAlt, EVENT_SHOWKEYBINDINGS},
-                                      {settings.showKeysAlt, EVENT_SHOWKEYBINDINGS},
-                                      {settings.hardEndOfPlaylist, EVENT_GOTOENDOFPLAYLIST},
-                                      {settings.hardShowTrack, EVENT_SHOWTRACK},
-                                      {settings.hardShowTrackAlt, EVENT_SHOWTRACK},
-                                      {settings.showTrackAlt, EVENT_SHOWTRACK},
-                                      {settings.hardShowLibrary, EVENT_SHOWLIBRARY},
-                                      {settings.hardShowLibraryAlt, EVENT_SHOWLIBRARY},
-                                      {settings.showLibraryAlt, EVENT_SHOWLIBRARY},
-                                      {settings.hardShowSearch, EVENT_SHOWSEARCH},
-                                      {settings.hardShowSearchAlt, EVENT_SHOWSEARCH},
-                                      {settings.showSearchAlt, EVENT_SHOWSEARCH},
-                                      {settings.hardNextPage, EVENT_NEXTPAGE},
-                                      {settings.hardPrevPage, EVENT_PREVPAGE},
-                                      {settings.hardRemove, EVENT_REMOVE},
-                                      {settings.hardRemove2, EVENT_REMOVE}};
-
-        int numKeyMappings = sizeof(keyMappings) / sizeof(EventMapping);
-
         // Set event for pressed key
-        for (int i = 0; i < numKeyMappings; i++)
+        for (int i = 0; i < NUM_KEY_MAPPINGS; i++)
         {
                 if (keyMappings[i].seq[0] != '\0' &&
                     ((seq[0] == '\033' && strlen(seq) > 1 && strcmp(seq + 1, keyMappings[i].seq) == 0) ||
@@ -389,7 +336,7 @@ void determineSongAndNotify()
         SongData *currentSongData = NULL;
 
         bool isDeleted = determineCurrentSongData(&currentSongData);
-        
+
         if (lastNotifiedId != currentSong->id)
         {
                 if (!isDeleted)
@@ -478,11 +425,6 @@ void resetListAfterDequeuingPlayingSong()
 
 void handleGoToSong()
 {
-        if (goingToSong)
-                return;
-
-        goingToSong = true;
-
         if (appState.currentView == LIBRARY_VIEW)
         {
                 if (audioData.restart)
@@ -542,13 +484,20 @@ void handleGoToSong()
                                 audioData.currentFileIndex = 0;
                                 loadingdata.loadA = true;
 
+                                bool wasEndOfList = false;
+                                if (audioData.endOfListReached)
+                                        wasEndOfList = true;
+
                                 skipToSong(chosenNodeId, true);
 
-                                if (songWasRemoved && currentSong != NULL)
+                                if ((songWasRemoved && currentSong != NULL))
                                 {
                                         usingSongDataA = !usingSongDataA;
                                         songWasRemoved = false;
                                 }
+
+                                if (wasEndOfList)
+                                        usingSongDataA = true;
 
                                 audioData.endOfListReached = false;
                         }
@@ -566,8 +515,6 @@ void handleGoToSong()
                         skipToNumberedSong(songNumber);
                 }
         }
-
-        goingToSong = false;
 }
 
 void gotoBeginningOfPlaylist()
@@ -689,12 +636,14 @@ void handleInput()
         case EVENT_SHOWTRACK:
                 showTrack();
                 break;
+        case EVENT_TABNEXT:
+                tabNext();
+                break;
         default:
                 fastForwarding = false;
                 rewinding = false;
                 break;
         }
-        eventProcessed = false;
 }
 
 void resize()
@@ -734,8 +683,6 @@ void updatePlayer()
 
 void loadAudioData()
 {
-        loadingAudioData = true;
-
         if (audioData.restart == true)
         {
                 if (playlist.head != NULL && (waitingForPlaylist || waitingForNext))
@@ -815,8 +762,6 @@ void loadAudioData()
                 loadNextSong();
                 determineSongAndNotify();
         }
-
-        loadingAudioData = false;
 }
 
 void tryLoadNext()
@@ -913,9 +858,8 @@ gboolean mainloop_callback(gpointer data)
 
                 if (playlist.head != NULL)
                 {
-                        if (loadingAudioData == false && (skipFromStopped || !loadedNextSong || nextSongNeedsRebuilding) && !audioData.endOfListReached)
+                        if ((skipFromStopped || !loadedNextSong || nextSongNeedsRebuilding) && !audioData.endOfListReached)
                         {
-                                // handleSkipFromStopped();
                                 loadAudioData();
                         }
 
@@ -1026,11 +970,11 @@ void cleanupOnExit()
         }
         emitPlaybackStoppedMpris();
 
+        bool noMusicFound = false;
+
         if (library == NULL || library->children == NULL)
         {
-                printf("No Music found.\n");
-                printf("Please make sure the path is set correctly. \n");
-                printf("To set it type: kew path \"/path/to/Music\". \n");
+                noMusicFound = true;
         }
 
         if (!userData.songdataADeleted)
@@ -1060,13 +1004,28 @@ void cleanupOnExit()
         free(specialPlaylist);
         free(originalPlaylist);
         setDefaultTextColor();
-        showCursor();
         pthread_mutex_destroy(&(loadingdata.mutex));
         pthread_mutex_destroy(&(playlist.mutex));
         pthread_mutex_destroy(&(switchMutex));
         pthread_mutex_unlock(&dataSourceMutex);
         pthread_mutex_destroy(&(dataSourceMutex));
+#ifdef USE_LIBNOTIFY      
+        notify_uninit();
+#endif
         resetConsole();
+        showCursor();
+        fflush(stdout);
+
+        if (noMusicFound)
+        {
+                printf("No Music found.\n");
+                printf("Please make sure the path is set correctly. \n");
+                printf("To set it type: kew path \"/path/to/Music\". \n");
+        }
+        else if (noPlaylist)
+        {
+                printf("Music not found.\n");
+        }
 
 #ifdef DEBUG
         fclose(logFile);
@@ -1122,7 +1081,7 @@ void init()
         pthread_mutex_init(&switchMutex, NULL);
         pthread_mutex_init(&(loadingdata.mutex), NULL);
         pthread_mutex_init(&(playlist.mutex), NULL);
-        nerdFontsEnabled = hasNerdFonts();
+        nerdFontsEnabled = true;
         createLibrary(&settings);
         setlocale(LC_ALL, "");
         fflush(stdout);
@@ -1319,6 +1278,108 @@ void exitIfAlreadyRunning()
         fclose(pidfile);
 }
 
+int directoryExists(const char *path)
+{
+    struct stat info;
+    if (stat(path, &info) != 0)
+    {
+        return 0;
+    }
+    else if (S_ISDIR(info.st_mode))
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+void setMusicPath()
+{
+        char *user = getenv("USER");
+
+        // Fallback if USER is not set
+        if (!user)
+        {
+                user = getlogin();
+
+                if (!user)
+                {
+                        struct passwd *pw = getpwuid(getuid());
+                        if (pw)
+                        {
+                                user = pw->pw_name;
+                        }
+                        else
+                        {
+                                printf("Error: Could not retrieve user information.\n");
+                                printf("Please set a path to your music library. \n");
+                                printf("To set it type: kew path \"/path/to/Music\". \n");
+                                exit(0);
+                        }
+                }
+        }
+
+        // Music folder names in different languages
+        const char *musicFolderNames[] = {
+            "Music", "Música", "Musique", "Musik", "Musica", "Muziek", "Музыка",
+            "音乐", "音楽", "음악", "موسيقى", "संगीत", "Müzik", "Musikk", "Μουσική",
+            "Muzyka", "Hudba", "Musiikki", "Zene", "Muzică", "เพลง", "מוזיקה"};
+
+        char path[MAXPATHLEN];
+        int found = 0;
+        char choice = ' ';
+        int result = -1;
+
+        for (size_t i = 0; i < sizeof(musicFolderNames) / sizeof(musicFolderNames[0]); i++)
+        {
+                snprintf(path, sizeof(path), "/home/%s/%s", user, musicFolderNames[i]);
+
+                if (directoryExists(path))
+                {
+                        found = 1;
+                        printf("Do you want to use %s as your music library folder?\n", path);
+                        printf("y = Yes\nn = Enter a path\n");
+
+                        result = scanf(" %c", &choice);
+
+                        if (choice == 'y' || choice == 'Y')
+                        {
+
+                                strncpy(settings.path, path, sizeof(settings.path));
+                                return;
+                        }
+                        else if (choice == 'n' || choice == 'N')
+                        {
+                                break; // Enter a custom path
+                        }
+                        else
+                        {
+                                printf("Invalid choice. Please try again.\n");
+                                i--;
+                        }
+                }
+        }
+
+        if (!found || (found && (choice == 'n' || choice == 'N')))
+        {
+                printf("Please enter the path to your music library (/path/to/Music):\n");
+                result = scanf("%s", path);
+
+                if (directoryExists(path))
+                {
+                        strncpy(settings.path, path, sizeof(settings.path));
+                }
+                else
+                {
+                        printf("The entered path does not exist.\n");
+                        exit(1);
+                }
+        }
+
+        if (result == -1)
+                exit(1);
+}
+
 int main(int argc, char *argv[])
 {
         exitIfAlreadyRunning();
@@ -1335,6 +1396,7 @@ int main(int argc, char *argv[])
         }
 
         getConfig(&settings);
+        mapSettingsToKeys(&settings, keyMappings);
 
         if (argc == 3 && (strcmp(argv[1], "path") == 0))
         {
@@ -1345,9 +1407,7 @@ int main(int argc, char *argv[])
 
         if (settings.path[0] == '\0')
         {
-                printf("Please make sure the path is set correctly. \n");
-                printf("To set it type: kew path \"/path/to/Music\". \n");
-                exit(0);
+                setMusicPath();
         }
 
         atexit(cleanupOnExit);
@@ -1376,7 +1436,10 @@ int main(int argc, char *argv[])
                 init();
                 makePlaylist(argc, argv, exactSearch, settings.path);
                 if (playlist.count == 0)
+                {
+                        noPlaylist = true;
                         exit(0);
+                }
                 run();
         }
 
