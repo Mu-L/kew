@@ -283,7 +283,13 @@ void printHelp(void)
 static const char *getPlayerStatusIcon(void)
 {
         if (opsIsPaused())
+        {
+#ifdef __ANDROID__
+                return "∥";
+#else
                 return "⏸";
+#endif
+        }
         if (opsIsStopped())
                 return "■";
         return "▶";
@@ -840,48 +846,56 @@ void printFooter(int row, int col, AppSettings *settings)
         strcpy(text, state->uiSettings.LAST_ROW);
 #endif
 
-        char nerdFontText[100] = "";
+        char iconsText[100] = "";
 
-        size_t maxLength = sizeof(nerdFontText);
+        size_t maxLength = sizeof(iconsText);
 
-        size_t currentLength = strnlen(nerdFontText, maxLength);
+        size_t currentLength = strnlen(iconsText, maxLength);
 
+#ifndef __ANDROID__
         if (term_w >= ABSOLUTE_MIN_WIDTH)
         {
+#endif
                 if (opsIsPaused())
                 {
+#ifdef __ANDROID__
+                        char pauseText[] = " ∥";
+#else
                         char pauseText[] = " ⏸";
-                        snprintf(nerdFontText + currentLength,
+#endif
+                        snprintf(iconsText + currentLength,
                                  maxLength - currentLength, "%s", pauseText);
                         currentLength += strlen(pauseText);
                 }
                 else if (opsIsStopped())
                 {
                         char pauseText[] = " ■";
-                        snprintf(nerdFontText + currentLength,
+                        snprintf(iconsText + currentLength,
                                  maxLength - currentLength, "%s", pauseText);
                         currentLength += strlen(pauseText);
                 }
                 else
                 {
                         char pauseText[] = " ▶";
-                        snprintf(nerdFontText + currentLength,
+                        snprintf(iconsText + currentLength,
                                  maxLength - currentLength, "%s", pauseText);
                         currentLength += strlen(pauseText);
                 }
+#ifndef __ANDROID__
         }
+#endif
 
         if (opsIsRepeatEnabled())
         {
                 char repeatText[] = " ↻";
-                snprintf(nerdFontText + currentLength,
+                snprintf(iconsText + currentLength,
                          maxLength - currentLength, "%s", repeatText);
                 currentLength += strlen(repeatText);
         }
         else if (isRepeatListEnabled())
         {
                 char repeatText[] = " ↻L";
-                snprintf(nerdFontText + currentLength,
+                snprintf(iconsText + currentLength,
                          maxLength - currentLength, "%s", repeatText);
                 currentLength += strlen(repeatText);
         }
@@ -889,7 +903,7 @@ void printFooter(int row, int col, AppSettings *settings)
         if (isShuffleEnabled())
         {
                 char shuffleText[] = " ⇄";
-                snprintf(nerdFontText + currentLength,
+                snprintf(iconsText + currentLength,
                          maxLength - currentLength, "%s", shuffleText);
                 currentLength += strlen(shuffleText);
         }
@@ -897,7 +911,7 @@ void printFooter(int row, int col, AppSettings *settings)
         if (uis->isFastForwarding)
         {
                 char forwardText[] = " ⇉";
-                snprintf(nerdFontText + currentLength,
+                snprintf(iconsText + currentLength,
                          maxLength - currentLength, "%s", forwardText);
                 currentLength += strlen(forwardText);
         }
@@ -905,7 +919,7 @@ void printFooter(int row, int col, AppSettings *settings)
         if (uis->isRewinding)
         {
                 char rewindText[] = " ⇇";
-                snprintf(nerdFontText + currentLength,
+                snprintf(iconsText + currentLength,
                          maxLength - currentLength, "%s", rewindText);
                 currentLength += strlen(rewindText);
         }
@@ -915,8 +929,8 @@ void printFooter(int row, int col, AppSettings *settings)
 #ifndef __ANDROID__
                 if (term_w > (int)currentLength + indent)
                 {
-                        printf("%s", nerdFontText); // Print just the shuffle
-                                                    // and replay settings
+                        printf("%s", iconsText); // Print just the shuffle
+                                                 // and replay settings
                 }
 #else
                 // Always try to print the footer on Android because it will
@@ -924,6 +938,7 @@ void printFooter(int row, int col, AppSettings *settings)
                 // Android.
                 printBlankSpaces(indent);
                 printf("%.*s", term_w * 2, text);
+                printf("%s", iconsText);
 #endif
                 clearRestOfLine();
                 return;
@@ -933,12 +948,12 @@ void printFooter(int row, int col, AppSettings *settings)
         int randomNumber = getRandomNumber(1, 808);
 
         if (randomNumber == 808 && !ui->hideGlimmeringText)
-                printGlimmeringText(row, col, text, textLength, nerdFontText,
+                printGlimmeringText(row, col, text, textLength, iconsText,
                                     footerColor);
         else
         {
                 printf("%s", text);
-                printf("%s", nerdFontText);
+                printf("%s", iconsText);
         }
 
         clearRestOfLine();
