@@ -20,8 +20,8 @@
 
 #define _(STRING) gettext(STRING)
 
-#ifndef MAXPATHLEN
-#define MAXPATHLEN 4096
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
 
 #ifndef G_USEC_PER_SEC
@@ -99,7 +99,7 @@ typedef struct
 
 typedef enum {
         TRACK_VIEW,
-        KEYBINDINGS_VIEW,
+        HELP_VIEW,
         PLAYLIST_VIEW,
         LIBRARY_VIEW,
         SEARCH_VIEW
@@ -129,6 +129,7 @@ typedef struct
         bool visualizerEnabled;         // Show spectrum visualizer
         bool hideLogo;                  // No kew text at top
         bool hideHelp;                  // No help text at top
+        bool hideSideCover;
         bool allowNotifications;        // Send desktop notifications or not
         int visualizer_height;          // Height in characters of the spectrum visualizer
         int visualizer_color_type;      // How colors are laid out in the spectrum
@@ -142,7 +143,7 @@ typedef struct
         time_t last_time_app_ran;       // When did this app run last, used for updating
                                         // the cached library if it has been modified
                                         // since that time
-        int visualizer_bar_width;       // 0=Thin bars, 1=Bars twice the width or 2=Auto
+        int visualizer_bar_mode;       // 0=Thin bars, 1=Bars twice the width or 2=Auto
                                         // (Depends on window size, default)
         int replayGainCheckFirst;       // Prioritize track or album replay gain
                                         // setting
@@ -164,6 +165,8 @@ typedef struct
         unsigned char default_color;
         PixelData defaultColorRGB;
         PixelData kewColorRGB;
+        int chromaPreset;
+        bool visualizations_instead_of_cover;
 } UISettings;
 
 typedef struct
@@ -219,7 +222,7 @@ typedef struct
 
 typedef struct
 {
-        char path[MAXPATHLEN];
+        char path[PATH_MAX];
         char theme[NAME_MAX];
         char ansiTheme[NAME_MAX];
         char colorMode[6];
@@ -306,6 +309,7 @@ typedef struct
         char mouseAltScrollDownAction[3];
         char hideLogo[2];
         char hideHelp[2];
+        char hideSideCover[2];
         char quitAfterStopping[2];
         char hideGlimmeringText[2];
         char nextView[6];
@@ -330,6 +334,7 @@ typedef struct
         char shuffle_enabled[2];
         char trackTitleAsWindowTitle[2];
         char showLyricsPage[6];
+        char chromaPreset[6];
 } AppSettings;
 
 typedef struct
@@ -354,8 +359,8 @@ typedef struct
 {
         int magic;
         gchar *track_id;
-        char file_path[MAXPATHLEN];
-        char cover_art_path[MAXPATHLEN];
+        char file_path[PATH_MAX];
+        char cover_art_path[PATH_MAX];
         unsigned char red;
         unsigned char green;
         unsigned char blue;
@@ -371,7 +376,7 @@ typedef struct
 
 typedef struct
 {
-        char file_path[MAXPATHLEN];
+        char file_path[PATH_MAX];
         SongData *songdataA;
         SongData *songdataB;
         bool loadA;
@@ -459,7 +464,6 @@ void set_try_next_song(Node *node);
 void set_audio_data(AudioData *audio_data);
 void set_library(FileSystemEntry *root);
 void free_playlists(void);
-void set_playlist(PlayList *pl);
 void set_unshuffled_playlist(PlayList *pl);
 void set_favorites_playlist(PlayList *pl);
 

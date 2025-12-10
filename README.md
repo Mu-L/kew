@@ -8,6 +8,10 @@
   <a href="https://jenova7.bandcamp.com/album/lost-sci-fi-movie-themes">
     <img src="images/kew.gif" alt="Screenshot">
   </a>
+  <br>
+  Screenshot showing <a href="https://jenova7.bandcamp.com/album/lost-sci-fi-movie-themes">
+    Jenova 7: Lost Sci-Fi Movie Themes
+  </a>.
 </div>
 <br><br>
 
@@ -164,6 +168,30 @@ kew theme <themename> (ie 'kew theme midnight')
 
 Put themes in \~/.config/kew/themes (\~/Library/Preferences/kew/themes on macOS).
 
+Do not edit the included themes as they are managed by kew. Instead make a copy with a different name and edit that.
+
+Try the theme editor (by @bholroyd): [https://bholroyd.github.io/Kew-tip/](https://bholroyd.github.io/Kew-tip/).
+
+<!--FIXME: Enable Chroma
+## Visulizations / Chroma
+
+You can add visualizations to kew by installing Chroma:
+
+https://github.com/yuri-xyz/chroma
+
+These are enabled when a song doesn't have a cover.
+
+You can also enable and cycle through them by pressing <kbd>c</kbd>.
+
+Disable by pressing <kbd>b</kbd>.
+
+<div align="center">
+  <a href="https://jenova7.bandcamp.com/album/lost-sci-fi-movie-themes">
+    <img src="images/chroma.gif" alt="Chroma">
+  </a>
+</div>
+<br><br>-->
+
 ## If Colors or Graphics Look Wrong
 
 Cycle <kbd>i</kbd> until they look right.
@@ -209,6 +237,8 @@ Licensed under GPL. [See LICENSE for more information](./LICENSE).
 kew makes use of the following great open source projects:
 
 Chafa by Hans Petter Jansson - https://hpjansson.org/chafa/
+
+Chroma by yuri-xyz - https://github.com/yuri-xyz/chroma
 
 TagLib by TagLib Team - https://taglib.org/
 

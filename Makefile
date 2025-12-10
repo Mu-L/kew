@@ -22,18 +22,16 @@ ifeq ($(origin USE_DBUS), undefined)
   endif
 endif
 
-# Adjust the PREFIX for macOS and Linux
-ifeq ($(UNAME_S), Darwin)
-    ifeq ($(ARCH), arm64)
-        PREFIX ?= /usr/local
+PREFIX ?= /usr/local
+
+ifeq ($(UNAME_S),Darwin)
+    ifeq ($(ARCH),arm64)
         PKG_CONFIG_PATH := /opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:$(PKG_CONFIG_PATH)
     else
-        PREFIX ?= /usr/local
         PKG_CONFIG_PATH := /usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:$(PKG_CONFIG_PATH)
     endif
-else
-    PREFIX ?= /usr/local
-    PKG_CONFIG_PATH := /usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig:$(PKG_CONFIG_PATH)
+
+    export PKG_CONFIG_PATH
 endif
 
 # Default USE_FAAD to auto-detect if not set by user
@@ -51,10 +49,9 @@ ifeq ($(origin USE_FAAD), undefined)
                        [ -f "/data/data/com.termux/files/usr/lib/libfaad2.so" ] || \
                        [ -f "/data/data/com.termux/files/usr/local/lib/libfaad.so" ] || \
                        [ -f "/data/data/com.termux/files/usr/local/lib/libfaad2.so" ] && echo 1 || echo 0)
-    LANGDIRPREFIX = /data/data/com.termux/files/usr
   else
     # Non-Android build - try pkg-config first
-    USE_FAAD = $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKG_CONFIG) --exists faad && echo 1 || echo 0)
+    USE_FAAD = $(shell $(PKG_CONFIG) --exists faad && echo 1 || echo 0)
 
     ifeq ($(USE_FAAD), 0)
         # If pkg-config fails, try to find libfaad dynamically in common paths
@@ -64,21 +61,37 @@ ifeq ($(origin USE_FAAD), undefined)
                         [ -f /opt/homebrew/opt/faad2/lib/libfaad.dylib ] || \
                          [ -f /usr/local/lib/libfaad.dylib ] || [ -f /lib/x86_64-linux-gnu/libfaad.so.2 ] && echo 1 || echo 0)
     endif
-
-    ifeq ($(UNAME_S), Darwin)
-        LANGDIRPREFIX = /usr/local
-    else
-        LANGDIRPREFIX = /usr
-    endif
   endif
-
 endif
 
-# Compiler flags
-COMMONFLAGS = -Isrc -I/usr/include -I/opt/homebrew/include -I/usr/local/include -I/usr/lib -Iinclude/minimp4 \
-         -I/usr/include/chafa -I/usr/lib/chafa/include -I/usr/lib64/chafa/include -I/usr/include/ogg -I/usr/include/opus \
-         -I/usr/include/stb -Iinclude/stb_image -I/usr/include/glib-2.0 \
-         -I/usr/lib/glib-2.0/include -I/usr/lib64/glib-2.0/include -Iinclude/miniaudio -Iinclude -Iinclude/nestegg -I/usr/include/gdk-pixbuf-2.0
+ifneq ($(wildcard /data/data/com.termux/files/usr),)
+  LANGDIRPREFIX = /data/data/com.termux/files/usr
+else
+  ifeq ($(UNAME_S), Darwin)
+      LANGDIRPREFIX = /usr/local
+  else
+      LANGDIRPREFIX = /usr
+  endif
+endif
+
+LOCAL_INC = \
+    -Isrc \
+    -Iinclude \
+    -Iinclude/minimp4 \
+    -Iinclude/stb_image \
+    -Iinclude/miniaudio \
+    -Iinclude/nestegg
+
+ifeq ($(UNAME_S),Darwin)
+    PKG_LIBS = gio-2.0 chafa fftw3f opus opusfile vorbis vorbisfile ogg glib-2.0 taglib gdk-pixbuf-2.0
+else
+    PKG_LIBS = gio-2.0 chafa fftw3f opus opusfile vorbis vorbisfile ogg glib-2.0 taglib
+endif
+
+PKG_CFLAGS  = $(shell $(PKG_CONFIG) --cflags $(PKG_LIBS))
+PKG_LDFLAGS = $(shell $(PKG_CONFIG) --libs $(PKG_LIBS))
+
+COMMONFLAGS = $(LOCAL_INC) $(PKG_CFLAGS)
 
 ifeq ($(DEBUG), 1)
 COMMONFLAGS += -g -DDEBUG
@@ -86,7 +99,6 @@ else
 COMMONFLAGS += -O2
 endif
 
-COMMONFLAGS += $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKG_CONFIG) --cflags gio-2.0 chafa fftw3f opus opusfile vorbis ogg glib-2.0 taglib)
 COMMONFLAGS += -DMA_NO_AAUDIO
 COMMONFLAGS += -fstack-protector-strong -Wformat -Wno-format-security -fPIE -D_FORTIFY_SOURCE=2
 COMMONFLAGS += -Wall -Wextra -Wpointer-arith
@@ -103,7 +115,7 @@ CFLAGS = $(COMMONFLAGS)
 CXXFLAGS = $(COMMONFLAGS) -std=c++11
 
 # Libraries
-LIBS = -L/usr/lib -lm -lopusfile -lglib-2.0 -lpthread $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKG_CONFIG) --libs gio-2.0 chafa fftw3f opus opusfile ogg vorbis vorbisfile glib-2.0 taglib)
+LIBS = -lm -lopusfile -lglib-2.0 -lpthread $(PKG_LDFLAGS)
 LIBS += -lstdc++
 
 LDFLAGS = -logg -lz
@@ -165,7 +177,7 @@ SRCS = src/common/appstate.c src/ui/common_ui.c src/common/common.c \
        src/ops/playback_ops.c src/ops/playback_clock.c src/ops/playback_system.c \
        src/ops/playlist_ops.c src/ops/library_ops.c src/ops/track_manager.c src/ops/playback_state.c \
        src/ui/control_ui.c  src/ui/input.c src/ui/playlist_ui.c  src/ui/search_ui.c  src/ui/player_ui.c \
-       src/ui/visuals.c src/ui/queue_ui.c src/ui/settings.c  src/ui/cli.c \
+       src/ui/visuals.c src/ui/chroma.c src/ui/queue_ui.c src/ui/settings.c  src/ui/cli.c \
        src/data/theme.c src/data/directorytree.c src/data/lyrics.c src/data/img_func.c src/data/song_loader.c  \
        src/data/playlist.c  src/kew.c
 
@@ -225,6 +237,7 @@ install: all
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	mkdir -p $(DESTDIR)$(THEMEDIR)
 	mkdir -p $(DESTDIR)$(LANGDIRPREFIX)/share/locale/zh_CN/LC_MESSAGES
+	mkdir -p $(DESTDIR)$(LANGDIRPREFIX)/share/locale/ja/LC_MESSAGES
 
 	# Install binary and man page
 	install -m 0755 kew $(DESTDIR)$(PREFIX)/bin/kew
@@ -233,6 +246,11 @@ install: all
 	# Install Chinese translation
 	install -m 0644 locale/zh_CN/LC_MESSAGES/kew.mo \
 		$(DESTDIR)$(LANGDIRPREFIX)/share/locale/zh_CN/LC_MESSAGES/kew.mo
+
+	# Install Japanese translation
+	install -m 0644 locale/ja/LC_MESSAGES/kew.mo \
+		$(DESTDIR)$(LANGDIRPREFIX)/share/locale/ja/LC_MESSAGES/kew.mo
+
 
 	@if [ -d $(THEMESRCDIR) ]; then \
 	for theme in $(THEMESRCDIR)/*.theme; do \
@@ -253,6 +271,7 @@ uninstall:
 	rm -f $(DESTDIR)$(MAN_DIR)/man1/kew.1
 	rm -rf $(DESTDIR)$(THEMEDIR)
 	rm -f $(DESTDIR)/usr/share/locale/zh_CN/LC_MESSAGES/kew.mo
+	rm -f $(DESTDIR)/usr/share/locale/ja/LC_MESSAGES/kew.mo
 
 .PHONY: clean
 clean:

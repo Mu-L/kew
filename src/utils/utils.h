@@ -19,8 +19,8 @@
 #define __USE_POSIX
 #endif
 
-#ifndef MAXPATHLEN
-#define MAXPATHLEN 4096
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
 
 int get_random_number(int min, int max);
@@ -48,6 +48,5 @@ void shorten_string(char *str, size_t max_length);
 void print_blank_spaces(int num_spaces);
 float get_float(const char *str);
 gint64 get_length_in_micro_sec(double duration);
-void str_to_lower(char *str);
 
 #endif

@@ -9,6 +9,7 @@
 
 #include "theme.h"
 
+#include "common/appstate.h"
 #include "common/common.h"
 
 #include "utils/utils.h"
@@ -201,6 +202,16 @@ int load_theme_from_file(const char *themes_dir, const char *filename, Theme *cu
 
         const size_t mapping_count = sizeof(mappings) / sizeof(ThemeMapping);
 
+        AppState *state = get_app_state();
+
+        ColorValue default_color;
+        default_color.type = COLOR_TYPE_RGB;
+        default_color.rgb = state->uiSettings.defaultColorRGB;
+
+        for (size_t i = 0; i < mapping_count; ++i) {
+                *(mappings[i].field) = default_color;
+        }
+
         char line[512];
         int line_num = 0;
         int found = 0;
@@ -273,60 +284,68 @@ int load_theme_from_file(const char *themes_dir, const char *filename, Theme *cu
         return found;
 }
 
-// Copies default themes to config dir if they aren't alread there
 bool ensure_default_themes(void)
 {
-        bool copied = false;
+    bool copied = false;
 
-        char *config_path = get_config_path();
-        if (!config_path)
-                return false;
+    char *config_path = get_config_path();
+    if (!config_path)
+        return false;
 
-        char themes_path[MAXPATHLEN];
-        if (snprintf(themes_path, sizeof(themes_path), "%s/themes", config_path) >=
-            (int)sizeof(themes_path)) {
-                free(config_path);
-                return false;
-        }
-
-        // Check if user themes directory already exists
-        struct stat st;
-        if (stat(themes_path, &st) == -1) {
-                char *system_themes = PREFIX "/share/kew/themes";
-                DIR *dir = opendir(system_themes);
-                if (dir) {
-                        struct dirent *entry;
-                        bool needsDir = false;
-
-                        while ((entry = readdir(dir)) != NULL) {
-                                if (entry->d_type == DT_REG &&
-                                    (strstr(entry->d_name, ".theme") ||
-                                     strstr(entry->d_name, ".txt"))) {
-                                        // Found at least one theme — create dir if not yet created
-                                        if (!needsDir) {
-                                                if (mkdir(themes_path, 0755) == 0)
-                                                        needsDir = true;
-                                                else
-                                                        break; // couldn't create directory
-                                        }
-
-                                        char src[MAXPATHLEN], dst[MAXPATHLEN];
-
-                                        if (snprintf(src, sizeof(src), "%s/%s",
-                                                     system_themes, entry->d_name) >= (int)sizeof(src))
-                                                continue;
-                                        if (snprintf(dst, sizeof(dst), "%s/%s",
-                                                     themes_path, entry->d_name) >= (int)sizeof(dst))
-                                                continue;
-
-                                        copy_file(src, dst);
-                                        copied = true;
-                                }
-                        }
-                        closedir(dir);
-                }
-        }
-
+    char themes_path[PATH_MAX];
+    if (snprintf(themes_path, sizeof(themes_path), "%s/themes", config_path) >= (int)sizeof(themes_path)) {
         free(config_path);
-        return copied;
+        return false;
+    }
+
+    struct stat st;
+    if (stat(themes_path, &st) == -1) {
+        // Directory doesn't exist → create it
+        if (mkdir(themes_path, 0755) == -1) {
+            free(config_path);
+            return false;
+        }
+    }
+
+    const char *system_themes = PREFIX "/share/kew/themes";
+    DIR *dir = opendir(system_themes);
+    if (!dir) {
+        free(config_path);
+        return false;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        // Only copy real files that look like themes
+        if (entry->d_type == DT_REG &&
+            (strstr(entry->d_name, ".theme") || strstr(entry->d_name, ".txt"))) {
+
+            char src[PATH_MAX], dst[PATH_MAX];
+
+            if (snprintf(src, sizeof(src), "%s/%s", system_themes, entry->d_name) >= (int)sizeof(src))
+                continue;
+            if (snprintf(dst, sizeof(dst), "%s/%s", themes_path, entry->d_name) >= (int)sizeof(dst))
+                continue;
+
+            bool need_copy = true;
+
+            // Check modification time
+            struct stat src_st, dst_st;
+            if (stat(src, &src_st) == 0 && stat(dst, &dst_st) == 0) {
+                if (difftime(src_st.st_mtime, dst_st.st_mtime) <= 0) {
+                    // Destination is newer or same → no need to copy
+                    need_copy = false;
+                }
+            }
+
+            if (need_copy) {
+                if (copy_file(src, dst))
+                    copied = true;
+            }
+        }
+    }
+
+    closedir(dir);
+    free(config_path);
+    return copied;
 }

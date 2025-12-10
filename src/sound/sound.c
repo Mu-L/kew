@@ -177,21 +177,28 @@ int handle_codec(
         enum AudioImplementation current_implementation =
             get_current_implementation_type();
 
+        int avg_bit_rate = 0;
+
+#ifdef USE_FAAD
+        k_m4adec_filetype file_type = 0;
+
+        if (ops.implType == M4A) {
+                get_m4a_file_info_full(file_path, &format, &channels, &sample_rate, channel_map, &avg_bit_rate, &file_type);
+        }
+        else {
+                ops.get_file_info(file_path, &format, &channels, &sample_rate, channel_map);
+        }
+#else
         ops.get_file_info(file_path, &format, &channels, &sample_rate, channel_map);
+#endif
 
         void *decoder = ops.getDecoder();
         if (decoder != NULL && ops.get_decoder_format)
                 ops.get_decoder_format(decoder, &nFormat, &nChannels, &nSampleRate,
                                        nChannelMap, MA_MAX_CHANNELS);
 
-        int avg_bit_rate = 0;
-#ifdef USE_FAAD
-        k_m4adec_filetype file_type = 0;
 
-        if (ops.implType == M4A) {
-                get_m4a_extra_info(file_path, &avg_bit_rate, &file_type);
-        }
-#endif
+
         // sameFormat computation
         bool sameFormat = false;
         if (ops.supportsGapless && decoder != NULL) {
@@ -218,14 +225,14 @@ int handle_codec(
                 audio_data->avg_bit_rate = 0;
         }
 
-        if (is_repeat_enabled() || !(sameFormat && current_implementation == ops.implType)) {
+        if (pb_is_repeat_enabled() || !(sameFormat && current_implementation == ops.implType)) {
                 set_impl_switch_reached();
 
                 pthread_mutex_lock(&(state->data_source_mutex));
 
                 set_current_implementation_type(ops.implType);
 
-                cleanup_playback_device();
+                pb_cleanup_playback_device();
                 reset_all_decoders();
                 reset_audio_buffer();
 
@@ -281,6 +288,7 @@ codec_ops_list[] = {
     {"webm", {.getDecoder = (void *(*)(void))get_current_webm_decoder, .get_file_info = get_webm_file_info, .get_decoder_format = (ma_result (*)(ma_data_source *, ma_format *, ma_uint32 *, ma_uint32 *, ma_channel *, size_t))ma_webm_ds_get_data_format, .create_audio_device = webm_createAudioDevice, .implType = WEBM, .supportsGapless = false}},
 #ifdef USE_FAAD
     {"m4a", {.getDecoder = (void *(*)(void))get_current_m4a_decoder, .get_file_info = get_m4a_file_info, .get_decoder_format = (ma_result (*)(ma_data_source *, ma_format *, ma_uint32 *, ma_uint32 *, ma_channel *, size_t))m4a_decoder_ds_get_data_format, .create_audio_device = m4a_createAudioDevice, .implType = M4A, .supportsGapless = true}},
+    {"aac", {.getDecoder = (void *(*)(void))get_current_m4a_decoder, .get_file_info = get_m4a_file_info, .get_decoder_format = (ma_result (*)(ma_data_source *, ma_format *, ma_uint32 *, ma_uint32 *, ma_channel *, size_t))m4a_decoder_ds_get_data_format, .create_audio_device = m4a_createAudioDevice, .implType = M4A, .supportsGapless = true}},
 #endif
 };
 
@@ -603,19 +611,19 @@ int webm_createAudioDevice(UserData *user_data, ma_device *device,
         return 0;
 }
 
-int switch_audio_implementation(void)
+int pb_switch_audio_implementation(void)
 {
         AppState *state = get_app_state();
 
         if (audio_data.end_of_list_reached) {
-                set_EOF_handled();
+                pb_set_EOF_handled();
                 set_current_implementation_type(NONE);
                 return 0;
         }
 
         audio_data.pUserData->current_song_data = (audio_data.currentFileIndex == 0) ? audio_data.pUserData->songdataA : audio_data.pUserData->songdataB;
         if (!audio_data.pUserData->current_song_data) {
-                set_EOF_handled();
+                pb_set_EOF_handled();
                 return 0;
         }
 
@@ -645,7 +653,7 @@ int switch_audio_implementation(void)
                 return -1;
         }
 
-        set_EOF_handled();
+        pb_set_EOF_handled();
         return 0;
 }
 
@@ -660,7 +668,7 @@ void cleanup_audio_context(void)
         context_initialized = false;
 }
 
-int create_audio_device(void)
+int pb_create_audio_device(void)
 {
         PlaybackState *ps = get_playback_state();
 
@@ -671,7 +679,7 @@ int create_audio_device(void)
         ma_context_init(NULL, 0, NULL, &context);
         context_initialized = true;
 
-        if (switch_audio_implementation() >= 0) {
+        if (pb_switch_audio_implementation() >= 0) {
                 ps->notifySwitch = true;
         } else {
                 return -1;

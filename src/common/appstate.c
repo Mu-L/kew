@@ -42,19 +42,22 @@ ProgressBar progress_bar;
 
 void free_playlists(void)
 {
-        delete_playlist(&playlist);
+        empty_playlist(&playlist);
+        pthread_mutex_destroy(&playlist.mutex);
 
         PlayList *unshuffled = get_unshuffled_playlist();
         PlayList *favorites = get_favorites_playlist();
 
         if (unshuffled != NULL) {
-                delete_playlist(unshuffled);
+                empty_playlist(unshuffled);
+                pthread_mutex_destroy(&unshuffled->mutex);
                 free(unshuffled);
                 unshuffled_playlist = NULL;
         }
 
         if (favorites != NULL) {
-                delete_playlist(favorites);
+                empty_playlist(favorites);
+                pthread_mutex_destroy(&favorites->mutex);
                 free(favorites);
                 favorites_playlist = NULL;
         }
@@ -165,19 +168,31 @@ void set_library(FileSystemEntry *root)
         library = root;
 }
 
-void set_playlist(PlayList *pl)
-{
-        if (pl)
-                playlist = *pl;
-}
-
 void set_unshuffled_playlist(PlayList *pl)
 {
+        if (pl == unshuffled_playlist) {
+                return;
+        }
+
+        if (unshuffled_playlist != NULL) {
+                empty_playlist(unshuffled_playlist);
+                pthread_mutex_destroy(&unshuffled_playlist->mutex);
+                free(unshuffled_playlist);
+        }
         unshuffled_playlist = pl;
 }
 
 void set_favorites_playlist(PlayList *pl)
 {
+        if (pl == favorites_playlist) {
+                return;
+        }
+
+        if (favorites_playlist != NULL) {
+                empty_playlist(favorites_playlist);
+                pthread_mutex_destroy(&favorites_playlist->mutex);
+                free(favorites_playlist);
+        }
         favorites_playlist = pl;
 }
 

@@ -27,7 +27,10 @@
 
 #include "sys/sys_integration.h"
 
+#include "ui/player_ui.h"
 #include "utils/utils.h"
+
+static bool skip_in_progress = false;
 
 Node *choose_next_song(void)
 {
@@ -145,81 +148,96 @@ void rebuild_next_song(Node *song)
         ps->songLoading = false;
 }
 
-void handle_remove(int chosen_row)
+void remove_song(Node *node)
 {
-        AppState *state = get_app_state();
         PlayList *playlist = get_playlist();
         PlayList *unshuffled_playlist = get_unshuffled_playlist();
+        Node *current = get_current_song();
+        bool rebuild = false;
 
-        if (state->currentView == PLAYLIST_VIEW) {
-
-                bool rebuild = false;
-
-                Node *node = find_selected_entry(unshuffled_playlist, chosen_row);
-
-                if (node == NULL) {
-                        return;
-                }
-
-                Node *current = get_current_song();
-                Node *song = choose_next_song();
-                int id = node->id;
-                int current_id = (current != NULL) ? current->id : -1;
-
-                if (current_id == node->id) {
-                        remove_currently_playing_song();
-                } else {
-                        if (get_song_to_start_from() != NULL) {
-                                set_song_to_start_from(get_list_next(node));
-                        }
-                }
-
-                pthread_mutex_lock(&(playlist->mutex));
-
-                if (node != NULL && song != NULL && current != NULL) {
-                        if (strcmp(song->song.file_path, node->song.file_path) ==
-                                0 ||
-                            (current != NULL && current->next != NULL &&
-                             id == current->next->id))
-                                rebuild = true;
-                }
-
-                if (node != NULL)
-                        mark_as_dequeued(get_library(), node->song.file_path);
-
-                Node *node2 = find_selected_entry_by_id(playlist, id);
-
-                if (node != NULL)
-                        delete_from_list(unshuffled_playlist, node);
-
-                if (node2 != NULL)
-                        delete_from_list(playlist, node2);
-
-                if (is_shuffle_enabled())
-                        rebuild = true;
-
-                current = find_selected_entry_by_id(playlist, current_id);
-
-                if (rebuild && current != NULL) {
-                        node = NULL;
-                        set_next_song(NULL);
-                        reshuffle_playlist();
-
-                        set_try_next_song(current->next);
-                        PlaybackState *ps = get_playback_state();
-                        ps->nextSongNeedsRebuilding = false;
-                        set_next_song(NULL);
-                        set_next_song(get_list_next(current));
-                        rebuild_next_song(get_next_song());
-                        ps->loadedNextSong = true;
-                }
-
-                pthread_mutex_unlock(&(playlist->mutex));
-        } else {
+        if (node == NULL) {
                 return;
         }
 
-        trigger_refresh();
+        Node *song = choose_next_song();
+        int id = node->id;
+        int current_id = (current != NULL) ? current->id : -1;
+
+        if (current_id == node->id) {
+                remove_currently_playing_song();
+        } else {
+                if (get_song_to_start_from() != NULL) {
+                        set_song_to_start_from(get_list_next(node));
+                }
+        }
+
+        pthread_mutex_lock(&(playlist->mutex));
+
+        if (node != NULL && song != NULL && current != NULL) {
+                if (strcmp(song->song.file_path, node->song.file_path) ==
+                        0 ||
+                    (current != NULL && current->next != NULL &&
+                     id == current->next->id))
+                        rebuild = true;
+        }
+
+        if (node != NULL)
+                mark_as_dequeued(get_library(), node->song.file_path);
+
+        Node *node2 = find_selected_entry_by_id(playlist, id);
+
+        if (node != NULL)
+                delete_from_list(unshuffled_playlist, node);
+
+        if (node2 != NULL)
+                delete_from_list(playlist, node2);
+
+        if (is_shuffle_enabled())
+                rebuild = true;
+
+        current = find_selected_entry_by_id(playlist, current_id);
+
+        if (rebuild && current != NULL) {
+                node = NULL;
+                set_next_song(NULL);
+                reshuffle_playlist();
+
+                set_try_next_song(current->next);
+                PlaybackState *ps = get_playback_state();
+                ps->nextSongNeedsRebuilding = false;
+                set_next_song(NULL);
+                set_next_song(get_list_next(current));
+                rebuild_next_song(get_next_song());
+                ps->loadedNextSong = true;
+        }
+
+        pthread_mutex_unlock(&(playlist->mutex));
+}
+
+void handle_remove(int chosen_row)
+{
+        AppState *state = get_app_state();
+        PlayList *unshuffled_playlist = get_unshuffled_playlist();
+        Node *node = NULL;
+
+        if (state->currentView == PLAYLIST_VIEW) {
+                node = find_selected_entry(unshuffled_playlist, chosen_row);
+                remove_song(node);
+                trigger_redraw_side_cover();
+                trigger_refresh();
+        } else {
+                Node *current = get_current_song();
+                if (current)
+                        node = find_selected_entry_by_id(unshuffled_playlist, current->id);
+
+                remove_song(node);
+
+                Node *next = get_next_song();
+                if (next)
+                {
+                        clear_and_play(next);
+                }
+        }
 }
 
 void add_to_favorites_playlist(void)
@@ -433,7 +451,7 @@ void skip_to_next_song(void)
         if (current == NULL || current->next == NULL) {
                 if (is_repeat_list_enabled()) {
                         clear_current_song();
-                } else if (!is_stopped() && !is_paused()) {
+                } else if (!pb_is_stopped() && !pb_is_paused()) {
                         stop();
                         return;
                 } else {
@@ -445,7 +463,7 @@ void skip_to_next_song(void)
             ps->clearingErrors)
                 return;
 
-        if (is_stopped() || is_paused()) {
+        if (pb_is_stopped() || pb_is_paused()) {
                 silent_switch_to_next(true);
                 return;
         }
@@ -471,22 +489,32 @@ void skip_to_next_song(void)
 
 void skip_to_prev_song(void)
 {
+
+        if (skip_in_progress)
+                return;
+        skip_in_progress = true;
+
         AppState *state = get_app_state();
         Node *current = get_current_song();
         PlaybackState *ps = get_playback_state();
-
+retry:
         if (current == NULL) {
-                if (!is_stopped() && !is_paused())
+                if (!pb_is_stopped() && !pb_is_paused())
                         stop();
+
+                skip_in_progress = false;
                 return;
         }
 
         if (ps->songLoading || ps->skipping || ps->clearingErrors)
-                if (!ps->forceSkip)
+                if (!ps->forceSkip) {
+                        skip_in_progress = false;
                         return;
+                }
 
-        if (is_stopped() || is_paused()) {
+        if (pb_is_stopped() || pb_is_paused()) {
                 silent_switch_to_prev();
+                skip_in_progress = false;
                 return;
         }
 
@@ -532,12 +560,14 @@ void skip_to_prev_song(void)
         if (ps->songHasErrors) {
                 ps->songHasErrors = false;
                 ps->forceSkip = true;
-                skip_to_prev_song();
+                goto retry;
         }
 
         reset_clock();
 
         skip();
+
+        skip_in_progress = false;
 }
 
 void skip_to_numbered_song(int song_number)
@@ -681,6 +711,7 @@ void move_song_up(int *chosen_row)
 
         pthread_mutex_unlock(&(playlist->mutex));
 
+        trigger_redraw_side_cover();
         trigger_refresh();
 }
 
@@ -753,6 +784,7 @@ void move_song_down(int *chosen_row)
 
         pthread_mutex_unlock(&(playlist->mutex));
 
+        trigger_redraw_side_cover();
         trigger_refresh();
 }
 
@@ -777,7 +809,7 @@ void handle_skip_out_of_order(void)
 {
         PlaybackState *ps = get_playback_state();
 
-        if (!ps->skipOutOfOrder && !ops_is_repeat_enabled()) {
+        if (!ps->skipOutOfOrder && !is_repeat_enabled()) {
                 set_current_song_to_next();
         } else {
                 ps->skipOutOfOrder = false;
@@ -858,6 +890,7 @@ void clear_and_play(Node *song)
         ps->loadingdata.loadA = true;
         ps->waitingForNext = true;
         ps->loadedNextSong = false;
+        ps->lastPlayedId = -1;
 }
 
 void playlist_play(PlayList *playlist)
@@ -866,7 +899,7 @@ void playlist_play(PlayList *playlist)
 
         Node *current = get_current_song();
 
-        if (ops_is_paused() && current != NULL &&
+        if (is_paused() && current != NULL &&
             state->uiState.chosen_node_id == current->id) {
                 ops_toggle_pause();
         } else {
@@ -894,7 +927,7 @@ void play_favorites_playlist(void)
 
         deep_copy_play_list_onto_list(favorites_playlist, &playlist);
         shuffle_playlist(playlist);
-        set_playlist(playlist);
+
         mark_list_as_enqueued(library, playlist);
 }
 

@@ -25,11 +25,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define MAX_STACK_SIZE 1000000
-
 #define FSDB_MAGIC 0x46534442 // "FSDB"
 
 static int last_used_id = 0;
+static uint32_t DB_VERSION = 2;
 
 // Header for the DB
 typedef struct {
@@ -38,6 +37,8 @@ typedef struct {
         uint32_t entry_count;
         uint32_t string_table_size;
         uint32_t max_id;
+        uint32_t root_full_path_offset;
+        uint32_t root_full_path_length;
 } FileSystemHeader;
 
 // Per-entry on disk (fixed-size fields + offsets into string table)
@@ -140,17 +141,31 @@ int write_tree_to_binary(FileSystemEntry *root, const char *filename)
                         strcpy(&string_table[offset], n->name);
                         offset += strlen(n->name) + 1;
                 } else {
-                        d->name_offset = 0; // fallback if name is NULL
-                        string_table[offset++] = '\0';
+                        d->name_offset = UINT32_MAX; // fallback if name is NULL
                 }
         }
 
         FileSystemHeader header = {
             .magic = FSDB_MAGIC,
-            .version = 1,
+            .version = DB_VERSION,
             .entry_count = (uint32_t)arr.size,
             .max_id = max_id,
-            .string_table_size = (uint32_t)total_name_size};
+            .string_table_size = (uint32_t)total_name_size,
+            .root_full_path_offset = 0,
+            .root_full_path_length = 0};
+
+        header.root_full_path_offset = offset;
+
+        // Store the root path
+        size_t root_len = strlen(root->full_path) + 1;
+        header.root_full_path_length = (uint32_t)root_len;
+
+        // Increase the string table in memory
+        string_table = realloc(string_table, offset + root_len);
+        memcpy(string_table + offset, root->full_path, root_len);
+
+        // Update final string table size
+        header.string_table_size = (uint32_t)(offset + root_len);
 
         FILE *f = fopen(filename, "wb");
         if (!f) {
@@ -162,7 +177,8 @@ int write_tree_to_binary(FileSystemEntry *root, const char *filename)
 
         if (fwrite(&header, sizeof(header), 1, f) != 1 ||
             fwrite(disk_entries, sizeof(FileSystemEntryDisk), arr.size, f) != arr.size ||
-            fwrite(string_table, 1, total_name_size, f) != total_name_size) {
+            fwrite(string_table, 1, header.string_table_size, f) != header.string_table_size) {
+
                 fclose(f);
                 free(arr.data);
                 free(disk_entries);
@@ -219,10 +235,6 @@ void add_child(FileSystemEntry *parent, FileSystemEntry *child)
         }
 }
 
-#ifndef MAX_NAME
-#define MAX_NAME 255
-#endif
-
 int is_valid_entry_name(const char *name)
 {
         if (name == NULL)
@@ -266,10 +278,10 @@ void set_full_path(FileSystemEntry *entry, const char *parent_path,
                 return;
         }
 
-        size_t parentLen = strnlen(parent_path, MAXPATHLEN + 1);
-        size_t nameLen = strnlen(entry_name, MAXPATHLEN + 1);
+        size_t parentLen = strnlen(parent_path, PATH_MAX + 1);
+        size_t nameLen = strnlen(entry_name, PATH_MAX + 1);
 
-        if (parentLen > MAXPATHLEN || nameLen > MAXPATHLEN) {
+        if (parentLen > PATH_MAX || nameLen > PATH_MAX) {
                 fprintf(
                     stderr,
                     "Parent or entry name too long or not null-terminated.\n");
@@ -282,7 +294,7 @@ void set_full_path(FileSystemEntry *entry, const char *parent_path,
 
         size_t needed = parentLen + 1 + nameLen + 1; // slash + null
 
-        if (needed > MAXPATHLEN) {
+        if (needed > PATH_MAX) {
                 fprintf(stderr, "Path too long, rejecting.\n");
 
                 return;
@@ -293,8 +305,12 @@ void set_full_path(FileSystemEntry *entry, const char *parent_path,
         if (entry->full_path == NULL)
                 return;
 
-        snprintf(entry->full_path, needed, "%.*s/%s", (int)parentLen, parent_path,
-                 entry_name);
+        if (nameLen == 0)
+                snprintf(entry->full_path, needed, "%s", parent_path);
+        else
+
+                snprintf(entry->full_path, needed, "%.*s/%s", (int)parentLen, parent_path,
+                         entry_name);
 
         entry->full_path[needed - 1] = '\0'; // Explicit null-termination
 
@@ -526,7 +542,7 @@ int read_directory(const char *path, FileSystemEntry *parent)
         }
 
         regex_t regex;
-        regcomp(&regex, AUDIO_EXTENSIONS, REG_EXTENDED);
+        regcomp(&regex, AUDIO_EXTENSIONS, REG_EXTENDED | REG_ICASE);
 
         int num_entries = 0;
 
@@ -540,7 +556,7 @@ int read_directory(const char *path, FileSystemEntry *parent)
                 if (entry->d_name[0] != '.' &&
                     strcmp(entry->d_name, ".") != 0 &&
                     strcmp(entry->d_name, "..") != 0) {
-                        char child_path[MAXPATHLEN];
+                        char child_path[PATH_MAX];
                         snprintf(child_path, sizeof(child_path), "%s/%s", path,
                                  entry->d_name);
 
@@ -600,7 +616,7 @@ FileSystemEntry *create_directory_tree(const char *start_path, int *num_entries)
 
         set_library(root);
 
-        set_full_path(root, "", "");
+        set_full_path(root, start_path, "");
 
         *num_entries = read_directory(start_path, root);
         *num_entries -= remove_empty_directories(root, 0);
@@ -652,7 +668,7 @@ int count_lines_and_max_id(const char *filename, int *max_id_out)
 FileSystemEntry *read_tree_from_binary(
     const char *filename,
     const char *start_music_path,
-    int *num_directory_entries)
+    int *num_directory_entries, bool set_enqueued_status)
 {
         if (!filename || !start_music_path)
                 return NULL;
@@ -664,7 +680,7 @@ FileSystemEntry *read_tree_from_binary(
                 return NULL;
 
         FileSystemHeader header;
-        if (fread(&header, sizeof(header), 1, f) != 1 || header.magic != FSDB_MAGIC) {
+        if (fread(&header, sizeof(header), 1, f) != 1 || header.magic != FSDB_MAGIC || header.version != DB_VERSION) {
                 fclose(f);
                 return NULL;
         }
@@ -675,6 +691,7 @@ FileSystemEntry *read_tree_from_binary(
                 fclose(f);
                 return NULL;
         }
+
         if (fread(disk_entries, sizeof(FileSystemEntryDisk), header.entry_count, f) != header.entry_count) {
                 free(disk_entries);
                 fclose(f);
@@ -688,6 +705,7 @@ FileSystemEntry *read_tree_from_binary(
                 fclose(f);
                 return NULL;
         }
+
         if (fread(string_table, 1, header.string_table_size, f) != header.string_table_size) {
                 free(disk_entries);
                 free(string_table);
@@ -710,6 +728,8 @@ FileSystemEntry *read_tree_from_binary(
                 return NULL;
         }
 
+        const char *stored_root_path = string_table + header.root_full_path_offset;
+
         FileSystemEntry *root = NULL;
 
         for (uint32_t i = 0; i < header.entry_count; i++) {
@@ -725,8 +745,14 @@ FileSystemEntry *read_tree_from_binary(
                 n->id = d->id;
                 n->parent_id = d->parent_id;
                 n->is_directory = d->is_directory;
-                n->is_enqueued = d->is_enqueued;
-                n->name = strdup(string_table + d->name_offset);
+                if (set_enqueued_status)
+                        n->is_enqueued = d->is_enqueued;
+                else
+                        n->is_enqueued = 0;
+                if (d->name_offset == UINT32_MAX)
+                        n->name = strdup(""); // empty name
+                else
+                        n->name = strdup(string_table + d->name_offset);
                 n->parent = n->children = n->next = n->lastChild = NULL;
                 n->full_path = NULL;
 
@@ -763,7 +789,7 @@ FileSystemEntry *read_tree_from_binary(
                         // Root node
                         root = n;
                         n->parent = NULL;
-                        n->full_path = strdup(start_music_path);
+                        n->full_path = strdup(stored_root_path);
                 }
         }
 

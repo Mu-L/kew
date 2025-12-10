@@ -92,7 +92,7 @@ void *song_data_reader_thread(void *arg)
 
         pthread_mutex_lock(&(ps->loadingdata.mutex));
 
-        char filepath[MAXPATHLEN];
+        char filepath[PATH_MAX];
         c_strcpy(filepath, ps->loadingdata.file_path, sizeof(filepath));
 
         SongData *songdata = exists_file(filepath) >= 0 ? load_song_data(filepath) : NULL;
@@ -184,7 +184,7 @@ void try_load_next(void)
 
 void pause_song(void)
 {
-        if (!is_paused()) {
+        if (!pb_is_paused()) {
                 emit_string_property_changed("PlaybackStatus", "Paused");
                 update_pause_time();
         }
@@ -224,14 +224,14 @@ void play(void)
 {
         PlaybackState *ps = get_playback_state();
 
-        if (is_paused()) {
+        if (pb_is_paused()) {
                 set_total_pause_seconds(get_total_pause_seconds() + get_pause_seconds());
                 emit_string_property_changed("PlaybackStatus", "Playing");
-        } else if (is_stopped()) {
+        } else if (pb_is_stopped()) {
                 emit_string_property_changed("PlaybackStatus", "Playing");
         }
 
-        if (is_stopped() && !ps->hasSilentlySwitched) {
+        if (pb_is_stopped() && !ps->hasSilentlySwitched) {
                 skip_to_begginning_of_song();
         }
 
@@ -250,7 +250,7 @@ bool is_valid_audio_node(Node *node)
         if (node->id < 0)
                 return false;
         if (!node->song.file_path ||
-            strnlen(node->song.file_path, MAXPATHLEN) == 0)
+            strnlen(node->song.file_path, PATH_MAX) == 0)
                 return false;
 
         return true;
@@ -353,7 +353,7 @@ void stop(void)
 {
         stop_playback();
 
-        if (is_stopped()) {
+        if (pb_is_stopped()) {
                 skip_to_begginning_of_song();
                 emit_string_property_changed("PlaybackStatus", "Stopped");
         }
@@ -363,17 +363,17 @@ void ops_toggle_pause(void)
 {
         PlaybackState *ps = get_playback_state();
 
-        if (is_stopped()) {
+        if (pb_is_stopped()) {
                 reset_clock();
         }
 
-        if (get_current_song() == NULL && is_paused()) {
+        if (get_current_song() == NULL && pb_is_paused()) {
                 return;
         }
 
         toggle_pause_playback();
 
-        if (is_paused()) {
+        if (pb_is_paused()) {
                 emit_string_property_changed("PlaybackStatus", "Paused");
                 update_pause_time();
         } else {
@@ -401,7 +401,7 @@ void seek(int seconds)
         }
 #endif
 
-        if (is_paused())
+        if (pb_is_paused())
                 return;
 
         double duration = current->song.duration;

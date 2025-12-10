@@ -18,6 +18,7 @@
 #include "common/common.h"
 #include "common_ui.h"
 
+#include "chroma.h"
 #include "input.h"
 
 #include "ops/library_ops.h"
@@ -41,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <time.h>
 #include <wchar.h>
 
 #ifdef __APPLE__
@@ -61,6 +63,7 @@ static int footer_row = 0;
 static const int MAX_TERM_SIZE = 10000;
 static const int scrolling_interval = 1;
 static const int LOGO_WIDTH = 22;
+static const int MIN_COVER_SIZE = 5;
 
 static int min_height = 0;
 static int preferred_width = 0;
@@ -78,6 +81,7 @@ static int chosen_lib_row = 0;           // The row that is chosen in library vi
 static int chosen_search_result_row = 0; // The row that is chosen in search view
 static int lib_iter = 0;
 static int lib_song_iter = 0;
+static int lib_row_count = 0;
 static int previous_chosen_lib_row = 0;
 static int lib_current_dir_song_count = 0;
 static PixelData footer_color = {120, 120, 120};
@@ -85,6 +89,28 @@ static FileSystemEntry *last_entry = NULL;
 static FileSystemEntry *chosen_dir = NULL;
 static bool is_same_name_as_last_time = false;
 static int term_w, term_h;
+static int has_chroma = -1;
+static bool next_visualization_requested = false;
+static bool redraw_side_cover = true;
+static ViewState last_view = LIBRARY_VIEW;
+static const char *last_cover_path_ptr = NULL;
+static size_t last_cover_path_hash = (size_t)-1;
+
+void request_next_visualization(void)
+{
+        AppState *state = get_app_state();
+        state->uiSettings.visualizations_instead_of_cover = true;
+
+        next_visualization_requested = true;
+}
+
+void request_stop_visualization(void)
+{
+        AppState *state = get_app_state();
+        state->uiSettings.visualizations_instead_of_cover = false;
+        next_visualization_requested = false;
+        chroma_stop();
+}
 
 int get_footer_row(void)
 {
@@ -94,6 +120,11 @@ int get_footer_row(void)
 int get_footer_col(void)
 {
         return footer_col;
+}
+
+void trigger_redraw_side_cover(void)
+{
+        redraw_side_cover = true;
 }
 
 bool init_theme(int argc, char *argv[])
@@ -272,26 +303,108 @@ void print_help(void)
 
 static const char *get_player_status_icon(void)
 {
-        if (ops_is_paused()) {
-#ifdef __ANDROID__
-                return "∥";
+        if (is_paused()) {
+#if defined(__ANDROID__) || defined(__APPLE__)
+                return "။";
 #else
                 return "⏸";
 #endif
         }
-        if (ops_is_stopped())
+        if (is_stopped())
                 return "■";
         return "▶";
 }
 
-int print_logo_art(const UISettings *ui, int indent, bool centered, bool print_tag_line, bool use_gradient)
+int print_logo_art(int row, int col, const UISettings *ui, bool centered, bool print_tag_line, bool use_gradient)
 {
-        if (ui->hideLogo) {
-                clear_line();
-                printf("\n");
-                return 1;
+        int h, w;
+
+        get_term_size(&w, &h);
+
+        int centered_col = (w - LOGO_WIDTH) / 2;
+        if (centered_col < 0)
+                centered_col = 0;
+
+        size_t logoHeight = sizeof(LOGO) / sizeof(LOGO[0]);
+
+        col = centered ? centered_col : col;
+
+        for (size_t i = 0; i < logoHeight; i++) {
+                unsigned char default_color = ui->default_color;
+
+                PixelData row_color = {ui->color.r, ui->color.g, ui->color.b};
+
+                if (use_gradient && !(ui->color.r == default_color &&
+                                      ui->color.g == default_color &&
+                                      ui->color.b == default_color)) {
+                        row_color = get_gradient_color(ui->color, logoHeight - i,
+                                                       logoHeight, 2, 0.8f);
+                }
+
+                apply_color(ui->colorMode, ui->theme.logo, row_color);
+
+                printf("\033[%d;%dH", row, col);
+                printf("%s", LOGO[i]);
+                row++;
         }
 
+        if (print_tag_line) {
+                printf("\033[%d;%dH", row++, col);
+                printf("MUSIC  FOR  THE  SHELL");
+                logoHeight += 2;
+        }
+
+        return logoHeight; // lines used by logo
+}
+
+static void build_song_title(const SongData *song_data, const UISettings *ui,
+                             char *out, size_t out_size, bool show_play_icon)
+{
+        const char *icon = get_player_status_icon();
+
+        if (!song_data || !song_data->metadata) {
+                out[0] = '\0'; //snprintf(out, out_size, "%*s%s", indent, "", icon);
+                return;
+        }
+
+        char pretty_title[METADATA_MAX_LENGTH] = {0};
+        snprintf(pretty_title, METADATA_MAX_LENGTH, "%s",
+                 song_data->metadata->title);
+        trim(pretty_title, strlen(pretty_title));
+
+        if (ui->hideLogo && song_data->metadata->artist[0] != '\0') {
+                snprintf(out, out_size, "%s %s - %s", icon,
+                         song_data->metadata->artist, pretty_title);
+        } else if (ui->hideLogo || show_play_icon) {
+                snprintf(out, out_size, "%s %s", icon, pretty_title);
+        } else {
+                strncpy(out, pretty_title, out_size - 1);
+                out[out_size - 1] = '\0';
+        }
+}
+
+void print_now_playing(SongData *song_data, UISettings *ui, int row, int col, int max_width)
+{
+        char title[PATH_MAX + 1];
+
+        build_song_title(song_data, ui, title, sizeof(title), true);
+
+        apply_color(ui->colorMode, ui->theme.nowplaying, ui->color);
+
+        clear_rest_of_line();
+
+        if (title[0] != '\0') {
+                char processed[PATH_MAX + 1] = {0};
+                process_name(title, processed, max_width, false, false);
+
+                printf("\033[%d;%dH", row, col);
+                printf("%s", processed);
+        }
+}
+
+// FIXME duplicated code print_logo_art and print_logo_art_for_version
+int print_logo_art_for_version(const UISettings *ui, int indent, bool centered, bool print_tag_line, bool use_gradient)
+{
         int h, w;
 
         get_term_size(&w, &h);
@@ -329,73 +442,92 @@ int print_logo_art(const UISettings *ui, int indent, bool centered, bool print_t
                 printf("MUSIC  FOR  THE  SHELL\n");
         }
 
-        return 3; // lines used by logo
+        return logoHeight; // lines used by logo
 }
 
-static void build_song_title(const SongData *song_data, const UISettings *ui,
-                             char *out, size_t out_size, int indent)
-{
-        if (!song_data || !song_data->metadata) {
-                out[0] = '\0';
-                return;
-        }
-
-        const char *icon = get_player_status_icon();
-
-        char pretty_title[METADATA_MAX_LENGTH] = {0};
-        snprintf(pretty_title, METADATA_MAX_LENGTH, "%s",
-                 song_data->metadata->title);
-        trim(pretty_title, strlen(pretty_title));
-
-        if (ui->hideLogo && song_data->metadata->artist[0] != '\0') {
-                snprintf(out, out_size, "%*s%s %s - %s", indent, "", icon,
-                         song_data->metadata->artist, pretty_title);
-        } else if (ui->hideLogo) {
-                snprintf(out, out_size, "%*s%s %s", indent, "", icon,
-                         pretty_title);
-        } else {
-                strncpy(out, pretty_title, out_size - 1);
-                out[out_size - 1] = '\0';
-        }
-}
-
-void print_now_playing(SongData *song_data, UISettings *ui, int row, int col, int max_width)
-{
-        char title[MAXPATHLEN + 1];
-
-        build_song_title(song_data, ui, title, sizeof(title), indent);
-
-        apply_color(ui->colorMode, ui->theme.nowplaying, ui->color);
-
-        if (title[0] != '\0') {
-                char processed[MAXPATHLEN + 1] = {0};
-                process_name(title, processed, max_width, false, false);
-
-                printf("\033[%d;%dH", row, col);
-                printf("%s", processed);
-                clear_rest_of_line();
-        }
-}
-
-int print_logo(SongData *song_data, UISettings *ui)
+// FIXME duplicated code print_logo and print_logo_for_version
+int print_logo_for_version(SongData *song_data, UISettings *ui)
 {
         int term_w, term_h;
 
         get_term_size(&term_w, &term_h);
 
-        int logo_width = ui->hideLogo ? 0 : LOGO_WIDTH;
-        int max_width =
-            term_w - indent - (ui->hideLogo ? 2 : logo_width + 4);
+        int logo_width = (ui->hideLogo == false) ? LOGO_WIDTH : 0;
+        int max_width = term_w - indent - 4 - logo_width - indent;
+        int height = 2;
 
-        int height = print_logo_art(ui, indent, false, false, true);
+        if (ui->hideLogo) {
+                printf("\n");
+                clear_line();
+        } else {
+                height = print_logo_art_for_version(ui, indent + 2, false, false, true);
+        }
 
-        print_now_playing(song_data, ui, height + 1, indent + logo_width + 2, max_width);
+        print_now_playing(song_data, ui, height, indent + logo_width + 4, max_width);
 
         printf("\n");
         clear_line();
-        printf("\n");
 
-        return height + 2;
+        printf("\n");
+        clear_line();
+
+        return height + 1;
+}
+
+int print_logo(SongData *song_data, UISettings *ui, int row, int col)
+{
+        int term_w, term_h;
+
+        printf("\033[%d;1H", row);
+
+        get_term_size(&term_w, &term_h);
+
+        int logo_width = (ui->hideLogo == false) ? LOGO_WIDTH : 0;
+        int max_width = term_w - indent - 4 - logo_width - indent;
+        int height = 2;
+
+        printf("\033[%d;%dH", row, col);
+
+        if (ui->hideLogo) {
+                clear_rest_of_line();
+                printf("\033[%d;%dH", row++, col);
+                clear_rest_of_line();
+        } else {
+                height = print_logo_art(row, col, ui, false, false, true);
+        }
+
+        print_now_playing(song_data, ui, height, col + logo_width + 1, max_width);
+
+        row += height;
+
+        printf("\033[%d;%dH", row++, col);
+        clear_rest_of_line();
+
+        printf("\033[%d;%dH", row++, col);
+        clear_rest_of_line();
+
+        return height + 1;
+}
+
+// FIXME duplicated code: print_about, print_about_for_version
+int print_about_for_version(SongData *songdata)
+{
+        AppState *state = get_app_state();
+        UISettings *ui = &(state->uiSettings);
+
+        clear_line();
+        int num_rows = print_logo_for_version(songdata, ui);
+
+        apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
+        print_blank_spaces(indent);
+        printf(_("   kew version: "));
+        apply_color(ui->colorMode, ui->theme.help, ui->color);
+        printf("%s\n", ui->VERSION);
+        clear_line();
+        printf("\n");
+        num_rows += 2;
+
+        return num_rows;
 }
 
 int get_year(const char *date_string)
@@ -408,41 +540,30 @@ int get_year(const char *date_string)
         return year;
 }
 
-void print_cover_centered(SongData *songdata, UISettings *ui)
+void print_cover(int row, int col, int target_height,
+                 bool centered,
+                 SongData *songdata)
 {
-        if (songdata != NULL && songdata->cover != NULL && ui->coverEnabled) {
-                if (!ui->coverAnsi) {
-                        print_square_bitmap_centered(
-                            songdata->cover, songdata->coverWidth,
-                            songdata->coverHeight, preferred_height);
-                } else {
-                        print_in_ascii_centered(songdata->cover_art_path,
-                                                preferred_height);
-                }
-        } else {
-                for (int i = 0; i <= preferred_height; ++i) {
-                        printf("\n");
-                }
-        }
+        AppState *state = get_app_state();
 
-        printf("\n\n");
-}
+        if (songdata != NULL && songdata->cover != NULL && state->uiSettings.coverEnabled) {
 
-void print_cover(int height, SongData *songdata, UISettings *ui)
-{
-        int row = 2;
-        int col = 2;
-        int img_height = height - 2;
-
-        clear_screen();
-
-        if (songdata != NULL && songdata->cover != NULL && ui->coverEnabled) {
-                if (!ui->coverAnsi) {
-                        print_square_bitmap(row, col, songdata->cover,
+                if (!state->uiSettings.coverAnsi) {
+                        print_square_bitmap(row, col,
+                                            songdata->cover,
                                             songdata->coverWidth,
-                                            songdata->coverHeight, img_height);
+                                            songdata->coverHeight,
+                                            target_height,
+                                            centered);
                 } else {
-                        print_in_ascii(col, songdata->cover_art_path, img_height);
+                        print_in_ascii(row, col, songdata->cover_art_path,
+                                       target_height, centered);
+                }
+
+        } else {
+                if (centered) {
+                        for (int i = 0; i <= target_height; ++i)
+                                printf("\n");
                 }
         }
 }
@@ -527,7 +648,7 @@ void print_metadata(int row, int col, int max_width,
 
         if (strnlen(metadata->title, METADATA_MAX_LENGTH) > 0) {
                 // Clean up title before printing
-                char pretty_title[MAXPATHLEN + 1];
+                char pretty_title[PATH_MAX + 1];
                 pretty_title[0] = '\0';
 
                 process_name(metadata->title, pretty_title, max_width, false,
@@ -789,16 +910,16 @@ void print_footer(int row, int col)
 #ifndef __ANDROID__
         if (term_w >= ABSOLUTE_MIN_WIDTH) {
 #endif
-                if (ops_is_paused()) {
+                if (is_paused()) {
 #if defined(__ANDROID__) || defined(__APPLE__)
-                        char pause_text[] = " ∥";
+                        char pause_text[] = " ။";
 #else
                 char pause_text[] = " ⏸";
 #endif
                         snprintf(icons_text + currentLength,
                                  max_length - currentLength, "%s", pause_text);
                         currentLength += strlen(pause_text);
-                } else if (ops_is_stopped()) {
+                } else if (is_stopped()) {
                         char pause_text[] = " ■";
                         snprintf(icons_text + currentLength,
                                  max_length - currentLength, "%s", pause_text);
@@ -813,7 +934,7 @@ void print_footer(int row, int col)
         }
 #endif
 
-        if (ops_is_repeat_enabled()) {
+        if (is_repeat_enabled()) {
                 char repeat_text[] = " ↻";
                 snprintf(icons_text + currentLength,
                          max_length - currentLength, "%s", repeat_text);
@@ -902,24 +1023,26 @@ int print_about(SongData *songdata)
         UISettings *ui = &(state->uiSettings);
 
         clear_line();
-        int num_rows = print_logo(songdata, ui);
+        int col = indent + (indent / 4);
+        if (ui->hideSideCover)
+                col = indent;
+        int row = print_logo(songdata, ui, 1, col + 2);
 
+        printf("\033[%d;%dH", ++row, col);
         apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
-        print_blank_spaces(indent);
-        printf(_(" kew version: "));
+        printf(_("   kew version: "));
         apply_color(ui->colorMode, ui->theme.help, ui->color);
-        printf("%s\n", ui->VERSION);
-        clear_line();
-        printf("\n");
-        num_rows += 2;
+        printf("%s", ui->VERSION);
+        clear_rest_of_line();
+        printf("\033[%d;%dH", ++row, col);
+        clear_rest_of_line();
 
-        return num_rows;
+        return row;
 }
 
 #define CHECK_LIST_LIMIT()                                       \
         do {                                                     \
-                if (num_printed_rows >= max_list_size) {         \
-                        printf("\n");                            \
+                if (num_printed_rows > max_list_size) {          \
                         calc_and_print_last_row_and_error_row(); \
                         return num_printed_rows;                 \
                 }                                                \
@@ -933,126 +1056,20 @@ int show_key_bindings(SongData *songdata)
         get_term_size(&term_w, &term_h);
         max_list_size = term_h - 3;
 
-        clear_screen();
-
         UISettings *ui = &(state->uiSettings);
 
         num_printed_rows += print_about(songdata);
+
         CHECK_LIST_LIMIT();
         apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
 
-        print_blank_spaces(indent);
-        printf(_(" Manual: See"));
-        apply_color(ui->colorMode, ui->theme.help, ui->color);
-        printf(_(" README"));
-        apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
-        printf(_(" Or man kew\n\n"));
-        num_printed_rows += 2;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Play/Pause: %s\n"), get_binding_string(EVENT_PLAY_PAUSE, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Enqueue/Dequeue: %s\n"), get_binding_string(EVENT_ENQUEUE, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Enqueue and Play: %s\n"), get_binding_string(EVENT_ENQUEUEANDPLAY, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Quit: %s\n"), get_binding_string(EVENT_QUIT, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Switch tracks: %s"),
-               get_binding_string(EVENT_PREV, false));
-        printf(_(" and %s\n"),
-               get_binding_string(EVENT_NEXT, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · volume: %s "), get_binding_string(EVENT_VOLUME_UP, false));
-        printf(_("and %s\n"), get_binding_string(EVENT_VOLUME_DOWN, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Clear List: %s\n"), get_binding_string(EVENT_CLEARPLAYLIST, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Change View: %s or "), get_binding_string(EVENT_NEXTVIEW, false));
+        int indentation = indent + (indent / 4) + 1;
+        if (ui->hideSideCover)
+                indentation = indent + 1;
 
-        printf("%s, ", get_binding_string(EVENT_SHOWPLAYLIST, true));
-        printf("%s, ", get_binding_string(EVENT_SHOWLIBRARY, true));
-        printf("%s, ", get_binding_string(EVENT_SHOWTRACK, true));
-        printf("%s, ", get_binding_string(EVENT_SHOWSEARCH, true));
-        printf("%s", get_binding_string(EVENT_SHOWHELP, true));
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
 
-        printf(_(" or click the footer\n"));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(
-            _(" · Cycle Color Mode: %s (default theme, theme or cover colors)\n"),
-            get_binding_string(EVENT_CYCLECOLORMODE, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Cycle Themes: %s\n"), get_binding_string(EVENT_CYCLETHEMES, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Stop: %s\n"), get_binding_string(EVENT_STOP, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Update Library: %s\n"), get_binding_string(EVENT_UPDATELIBRARY, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Toggle Visualizer: %s\n"), get_binding_string(EVENT_TOGGLEVISUALIZER, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Toggle ASCII Cover: %s\n"), get_binding_string(EVENT_TOGGLEASCII, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Toggle Lyrics Page on Track View: %s\n"), get_binding_string(EVENT_SHOWLYRICSPAGE, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Toggle Notifications: %s\n"), get_binding_string(EVENT_TOGGLENOTIFICATIONS, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Cycle Repeat: %s (repeat/repeat list/off)\n"),
-               get_binding_string(EVENT_TOGGLEREPEAT, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Shuffle: %s\n"), get_binding_string(EVENT_SHUFFLE, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Seek: %s and"), get_binding_string(EVENT_SEEKBACK, false));
-        printf(_(" %s\n"), get_binding_string(EVENT_SEEKFORWARD, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Export Playlist: %s (named after the first song)\n"),
-               get_binding_string(EVENT_EXPORTPLAYLIST, false));
-        num_printed_rows++;
-        CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        printf(_(" · Add Song To 'kew favorites.m3u': %s (run with 'kew .')\n\n"),
-               get_binding_string(EVENT_ADDTOFAVORITESPLAYLIST, false));
-        num_printed_rows += 2;
-        CHECK_LIST_LIMIT();
         apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
-        print_blank_spaces(indent);
         printf(_(" Theme: "));
 
         if (ui->colorMode == COLOR_MODE_ALBUM) {
@@ -1073,36 +1090,130 @@ int show_key_bindings(SongData *songdata)
                 apply_color(ui->colorMode, ui->theme.help, ui->color);
                 printf("%s", ui->theme.theme_author);
         }
-        printf("\n");
-        printf("\n");
         num_printed_rows += 2;
         CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
-        apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
-        printf(_(" Project URL:"));
-        apply_color(ui->colorMode, ui->theme.link, ui->color);
-        printf(" https://codeberg.org/ravachol/kew\n");
-        num_printed_rows += 1;
+        printf("\033[%d;%dH", num_printed_rows, indentation + 1);
+        printf(_(" · Play/Pause: %s"), get_binding_string(EVENT_PLAY_PAUSE, false));
         CHECK_LIST_LIMIT();
-        print_blank_spaces(indent);
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Enqueue/Dequeue: %s"), get_binding_string(EVENT_ENQUEUE, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Enqueue and Play: %s"), get_binding_string(EVENT_ENQUEUEANDPLAY, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Quit: %s"), get_binding_string(EVENT_QUIT, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Switch tracks: %s"),
+               get_binding_string(EVENT_PREV, false));
+        printf(_(" and %s"),
+               get_binding_string(EVENT_NEXT, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Volume: %s "), get_binding_string(EVENT_VOLUME_UP, false));
+        printf(_("and %s"), get_binding_string(EVENT_VOLUME_DOWN, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Scroll: %s"), get_binding_string(EVENT_PREVPAGE, false));
+        printf(_(", %s"), get_binding_string(EVENT_NEXTPAGE, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Clear List: %s"), get_binding_string(EVENT_CLEARPLAYLIST, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Remove from playlist: %s"), get_binding_string(EVENT_REMOVE, true));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Move songs: %s"), get_binding_string(EVENT_MOVESONGUP, true));
+        printf(_("/%s"), get_binding_string(EVENT_MOVESONGDOWN, true));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Change View: %s or "), get_binding_string(EVENT_NEXTVIEW, false));
+
+        printf("%s, ", get_binding_string(EVENT_SHOWPLAYLIST, true));
+        printf("%s, ", get_binding_string(EVENT_SHOWLIBRARY, true));
+        printf("%s, ", get_binding_string(EVENT_SHOWTRACK, true));
+        printf("%s, ", get_binding_string(EVENT_SHOWSEARCH, true));
+        printf("%s", get_binding_string(EVENT_SHOWHELP, true));
+
+        printf(_(" or click the footer"));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(
+            _(" · Cycle Color Mode: %s (default theme, theme or cover colors)"),
+            get_binding_string(EVENT_CYCLECOLORMODE, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Cycle Themes: %s"), get_binding_string(EVENT_CYCLETHEMES, false));
+        CHECK_LIST_LIMIT();
+        // FIXME: Enable Chroma
+        // print_blank_spaces(indentation);
+        // printf(_(" · Cycle Chroma Visualization: %s (requires Chroma)\n"), get_binding_string(EVENT_CYCLEVISUALIZATION, false));
+        // num_printed_rows++;
+        // CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Stop: %s"), get_binding_string(EVENT_STOP, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Update Library: %s"), get_binding_string(EVENT_UPDATELIBRARY, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Sort Library: %s"), get_binding_string(EVENT_SORTLIBRARY, true));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Toggle Visualizer: %s"), get_binding_string(EVENT_TOGGLEVISUALIZER, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        // FIXME: Enable Chroma
+        //printf(_(" · Toggle ASCII Cover: %s (disables Chroma)\n"), get_binding_string(EVENT_TOGGLEASCII, false));
+        printf(_(" · Toggle ASCII Cover: %s"), get_binding_string(EVENT_TOGGLEASCII, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Toggle Lyrics Page on Track View: %s"), get_binding_string(EVENT_SHOWLYRICSPAGE, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Toggle Notifications: %s"), get_binding_string(EVENT_TOGGLENOTIFICATIONS, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Cycle Repeat: %s (repeat/repeat list/off)"),
+               get_binding_string(EVENT_TOGGLEREPEAT, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Shuffle: %s"), get_binding_string(EVENT_SHUFFLE, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Seek: %s and"), get_binding_string(EVENT_SEEKBACK, false));
+        printf(_(" %s"), get_binding_string(EVENT_SEEKFORWARD, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Export Playlist: %s (named after the first song)"),
+               get_binding_string(EVENT_EXPORTPLAYLIST, false));
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        printf(_(" · Add Song To 'kew favorites.m3u': %s (run with 'kew .')"),
+               get_binding_string(EVENT_ADDTOFAVORITESPLAYLIST, false));
+        num_printed_rows += 2;
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", num_printed_rows, indentation + 1);
         apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
-        printf(_(" Please Donate:"));
+        printf(_(" Project URL: "));
         apply_color(ui->colorMode, ui->theme.link, ui->color);
-        printf(" https://ko-fi.com/ravachol\n\n");
+        printf("https://codeberg.org/ravachol/kew");
+        CHECK_LIST_LIMIT();
+        printf("\033[%d;%dH", ++num_printed_rows, indentation + 1);
+        apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
+        printf(_(" Please Donate: "));
+        apply_color(ui->colorMode, ui->theme.link, ui->color);
+        printf("https://ko-fi.com/ravachol");
         num_printed_rows += 2;
         CHECK_LIST_LIMIT();
         apply_color(ui->colorMode, ui->theme.text, ui->defaultColorRGB);
-        print_blank_spaces(indent);
+        printf("\033[%d;%dH", num_printed_rows, indentation + 1);
         printf(" Copyright © 2022-2025 Ravachol\n");
 
-        printf("\n");
-        num_printed_rows += 2;
+        num_printed_rows += 1;
         CHECK_LIST_LIMIT();
-
-        while (num_printed_rows < max_list_size) {
-                printf("\n");
-                num_printed_rows++;
-        }
 
         calc_and_print_last_row_and_error_row();
 
@@ -1143,9 +1254,9 @@ void switch_to_next_view(void)
                 clear_screen();
                 break;
         case SEARCH_VIEW:
-                state->currentView = KEYBINDINGS_VIEW;
+                state->currentView = HELP_VIEW;
                 break;
-        case KEYBINDINGS_VIEW:
+        case HELP_VIEW:
                 state->currentView = PLAYLIST_VIEW;
                 break;
         }
@@ -1159,7 +1270,7 @@ void switch_to_previous_view(void)
 
         switch (state->currentView) {
         case PLAYLIST_VIEW:
-                state->currentView = KEYBINDINGS_VIEW;
+                state->currentView = HELP_VIEW;
                 break;
         case LIBRARY_VIEW:
                 state->currentView = PLAYLIST_VIEW;
@@ -1172,7 +1283,7 @@ void switch_to_previous_view(void)
                 state->currentView =
                     (get_current_song() != NULL) ? TRACK_VIEW : LIBRARY_VIEW;
                 break;
-        case KEYBINDINGS_VIEW:
+        case HELP_VIEW:
                 state->currentView = SEARCH_VIEW;
                 break;
         }
@@ -1292,73 +1403,91 @@ int get_row_within_bounds(int row)
 }
 
 int print_logo_and_adjustments(SongData *song_data, int term_width, UISettings *ui,
-                               int indentation, AppSettings *settings)
+                               int indentation)
 {
-        int about_rows = print_logo(song_data, ui);
+        int about_rows = print_logo(song_data, ui, 1, indentation + 2);
 
         apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
 
+        int row = about_rows;
+        int col = indentation + 1;
+
         if (term_width > 52 && !ui->hideHelp) {
-                print_blank_spaces(indentation);
-                clear_line();
-                printf(_(" Use ↑/↓ or k/j to select. Enter: Accept. Backspace: clear.\n"));
-                print_blank_spaces(indentation);
+                printf("\033[%d;%dH", row, col);
+                clear_rest_of_line();
+                printf("\033[%d;%dH", ++row, col + 1);
+                printf(_(" Select:↑/↓ or k/j."));
+                printf(_(" Accept:%s."), get_binding_string(EVENT_ENQUEUE, true));
+                printf(_(" Clear:%s."), get_binding_string(EVENT_CLEARPLAYLIST, true));
+                printf("\033[%d;%dH", ++row, col);
+                clear_rest_of_line();
+                printf("\033[%d;%dH", row, col + 1);
 #ifndef __APPLE__
-                clear_line();
-                printf(_(" PgUp/PgDn: scroll. Del: remove. %s/%s: move songs.\n"),
-                       settings->move_song_up, settings->move_song_down);
-                clear_line();
-                printf("\n");
+                printf(_(" Scroll:PgUp/PgDn."));
 #else
-                clear_line();
-                printf(_(" Fn+↑/↓: scroll. Del: remove. %s/%s: move songs.\n"),
-                       settings->move_song_up, settings->move_song_down);
-                clear_line();
-                printf("\n");
+                printf(_(" Scroll:Fn+↑/↓."));
 #endif
-                clear_line();
-                return about_rows + 3;
+                printf(_(" Remove:%s."), get_binding_string(EVENT_REMOVE, true));
+                printf(_(" Move songs:%s"), get_binding_string(EVENT_MOVESONGUP, true));
+                printf(_("/%s."), get_binding_string(EVENT_MOVESONGDOWN, true));
+                printf("\033[%d;%dH", ++row, col);
+                clear_rest_of_line();
+                printf("\033[%d;%dH", ++row, col);
+                clear_rest_of_line();
         }
-        return about_rows;
+        return row;
 }
 
 void show_search(SongData *song_data, int *chosen_row)
 {
         int term_w, term_h;
         get_term_size(&term_w, &term_h);
-        max_search_list_size = term_h - 3;
+        max_search_list_size = term_h - 2;
 
         AppState *state = get_app_state();
         UISettings *ui = &(state->uiSettings);
 
         goto_first_line_first_row();
 
-        int about_rows = print_logo(song_data, ui);
+        int col = indent + (indent / 4);
+        if (ui->hideSideCover)
+                col = indent;
+
+        int about_rows = print_logo(song_data, ui, 1, col + 2);
+
         max_search_list_size -= about_rows;
 
         apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
 
-        if (term_w > indent + 38 && !ui->hideHelp) {
-                clear_line();
-                print_blank_spaces(indent);
-                clear_line();
-                printf(_(" Use ↑/↓ to select. Enter: Enqueue. Alt+Enter: Play.\n"));
-                clear_line();
-                printf("\n");
+        int row = about_rows;
+
+        printf("\033[%d;%dH", row, col + 2);
+        clear_rest_of_line();
+
+        if (term_w > col + 38 && !ui->hideHelp) {
+                printf("\033[%d;%dH", ++row, col + 2);
+                printf(_(" Select:↑/↓."));
+                printf(_(" Enqueue:%s."), get_binding_string(EVENT_ENQUEUE, true));
+                printf(_(" Play:%s."), get_binding_string(EVENT_ENQUEUEANDPLAY, true));
+                printf("\033[%d;%dH", ++row, col + 2);
+                clear_rest_of_line();
+
                 max_search_list_size -= 2;
         }
 
-        display_search(max_search_list_size, indent, chosen_row, start_search_iter);
+        printf("\033[%d;%dH", ++row, col);
+        clear_rest_of_line();
 
+        display_search(row, col, max_search_list_size, chosen_row, start_search_iter);
         calc_and_print_last_row_and_error_row();
 }
 
 void show_playlist(SongData *song_data, PlayList *list, int *chosen_song,
-                   int *chosen_node_id, AppSettings *settings)
+                   int *chosen_node_id)
 {
         int term_w, term_h;
         get_term_size(&term_w, &term_h);
-        max_list_size = term_h - 3;
+        max_list_size = term_h - 1;
 
         AppState *state = get_app_state();
         UISettings *ui = &(state->uiSettings);
@@ -1375,24 +1504,29 @@ void show_playlist(SongData *song_data, PlayList *list, int *chosen_song,
 
         goto_first_line_first_row();
 
-        int about_rows =
-            print_logo_and_adjustments(song_data, term_w, ui, indent, settings);
+        int row = 1;
+        int col = indent + (indent / 4);
+        if (ui->hideSideCover)
+                col = indent;
+
+        int about_rows = print_logo_and_adjustments(song_data, term_w, ui, col);
         max_list_size -= about_rows;
+
+        row = about_rows;
 
         apply_color(ui->colorMode, ui->theme.header, ui->color);
 
         if (max_list_size > 0) {
-                clear_line();
-                print_blank_spaces(indent);
-                printf(_("   ─ PLAYLIST ─\n"));
+                printf("\033[%d;%dH", row, col + 1);
+                printf(_("   ─ PLAYLIST ─"));
+                clear_rest_of_line();
         }
 
-        max_list_size -= 1;
+        max_list_size -= 2;
 
         if (max_list_size > 0)
-                display_playlist(list, max_list_size, indent, chosen_song,
-                                 chosen_node_id,
-                                 state->uiState.resetPlaylistDisplay);
+                display_playlist(row + 1, col + 1, list, max_list_size, chosen_song,
+                                 chosen_node_id, state->uiState.resetPlaylistDisplay);
 
         calc_and_print_last_row_and_error_row();
 }
@@ -1442,8 +1576,7 @@ void print_progress_bar(int row, int col, AppSettings *settings, UISettings *ui,
                 }
 
                 if (i < elapsed_bars) {
-                        apply_color(ui->colorMode, ui->theme.progress_filled,
-                                    color);
+                        apply_color(ui->colorMode, ui->theme.progress_filled, color);
 
                         if (i % 2 == 0)
                                 printf("%s",
@@ -1452,8 +1585,7 @@ void print_progress_bar(int row, int col, AppSettings *settings, UISettings *ui,
                                 printf("%s",
                                        settings->progressBarElapsedOddChar);
                 } else if (i == elapsed_bars) {
-                        apply_color(ui->colorMode, ui->theme.progress_elapsed,
-                                    color);
+                        apply_color(ui->colorMode, ui->theme.progress_elapsed, color);
 
                         if (i % 2 == 0)
                                 printf("%s",
@@ -1488,7 +1620,7 @@ void print_visualizer(int row, int col, int visualizer_width,
                 uis->num_progress_bars = (int)visualizer_width / 2;
                 double duration = get_current_song_duration();
 
-                draw_spectrum_visualizer(row, col, height);
+                draw_spectrum_visualizer(row, col, height, visualizer_width);
 
                 int elapsed_bars =
                     calc_elapsed_bars(elapsed_seconds, duration, visualizer_width);
@@ -1528,7 +1660,7 @@ void apply_tree_item_color(UISettings *ui, int depth,
         if (depth <= 1) {
                 apply_color(ui->colorMode, ui->theme.library_artist, enqueued_color);
         } else {
-                if (ui->colorMode == COLOR_MODE_ALBUM || ui->colorMode == COLOR_MODE_THEME)
+                if (ui->colorMode == COLOR_MODE_ALBUM || (ui->colorMode == COLOR_MODE_THEME && ui->theme.library_track.type == COLOR_TYPE_RGB))
                         apply_color(COLOR_MODE_ALBUM, ui->theme.library_track,
                                     track_color);
                 else
@@ -1541,7 +1673,7 @@ void apply_tree_item_color(UISettings *ui, int depth,
                         apply_color(ui->colorMode, ui->theme.library_playing,
                                     ui->color);
                 } else {
-                        if (ui->colorMode == COLOR_MODE_ALBUM || ui->colorMode == COLOR_MODE_THEME)
+                        if (ui->colorMode == COLOR_MODE_ALBUM || (ui->colorMode == COLOR_MODE_THEME && ui->theme.library_enqueued.type == COLOR_TYPE_RGB))
                                 apply_color(COLOR_MODE_ALBUM, ui->theme.library_enqueued,
                                             enqueued_color);
                         else
@@ -1552,13 +1684,13 @@ void apply_tree_item_color(UISettings *ui, int depth,
 }
 
 int display_tree(FileSystemEntry *root, int depth, int max_list_size,
-                 int max_name_width)
+                 int max_name_width, int row, int col)
 {
         if (max_name_width < 0)
                 max_name_width = 0;
 
         char dir_name[max_name_width + 1];
-        char filename[MAXPATHLEN + 1];
+        char filename[PATH_MAX + 1];
         bool foundChosen = false;
         int is_playing = 0;
         int extra_indent = 0;
@@ -1598,7 +1730,7 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
         PixelData rgb_enqueued = {ui->default_color, ui->default_color, ui->default_color};
 
         if (ui->colorMode == COLOR_MODE_THEME &&
-            ui->theme.playlist_rownum.type == COLOR_TYPE_RGB) {
+            ui->theme.library_track.type == COLOR_TYPE_RGB) {
                 rgb_track = ui->theme.library_track.rgb;
                 rgb_enqueued = ui->theme.library_enqueued.rgb;
         } else {
@@ -1632,6 +1764,7 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
                 if (state->uiState.currentLibEntry != NULL && state->uiState.currentLibEntry != last_entry &&
                     !state->uiState.currentLibEntry->is_directory &&
                     state->uiState.currentLibEntry->parent != NULL &&
+                    state->uiState.currentLibEntry->parent->parent != NULL &&
                     state->uiState.currentLibEntry->parent == chosen_dir) {
                         FileSystemEntry *tmpc = state->uiState.currentLibEntry->parent->children;
 
@@ -1650,16 +1783,18 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
                         apply_tree_item_color(ui, depth, row_color, row_color2,
                                               root->is_enqueued, is_playing);
 
-                        clear_line();
+                        printf("\033[%d;%dH", row + lib_row_count, col);
+
+                        clear_rest_of_line();
 
                         if (depth >= 2)
-                                printf("  ");
+                                extra_indent += 2;
 
                         // If more than two levels deep add an extra
                         // indentation
-                        extra_indent = (depth - 2 <= 0) ? 0 : depth - 2;
+                        extra_indent += (depth - 2 <= 0) ? 0 : depth - 2;
 
-                        print_blank_spaces(indent + extra_indent);
+                        printf("\033[%d;%dH", row + lib_row_count, col + extra_indent);
 
                         if (chosen_lib_row == lib_iter) {
                                 if (root->is_enqueued) {
@@ -1715,11 +1850,13 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
 
                                 char *upper_dir_name = string_to_upper(dir_name);
 
-                                if (depth == 1)
-                                        printf("%s \n", upper_dir_name);
-                                else {
-                                        printf("%s \n", dir_name);
+                                if (depth == 1) {
+                                        printf("%s", upper_dir_name);
+                                } else {
+                                        printf("%s", dir_name);
                                 }
+                                if (strcmp(dir_name, "Warlord") == 0)
+                                        fflush(stdout);
                                 free(upper_dir_name);
                         } else {
                                 filename[0] = '\0';
@@ -1765,14 +1902,12 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
                                         printf("\e[4m");
                                 }
 
-                                printf("%s\n", filename);
+                                printf("%s", filename);
 
-                                apply_color(COLOR_MODE_ALBUM, ui->theme.text,
-                                    ui->defaultColorRGB);
-                                clear_rest_of_line();
-
+                                apply_color(COLOR_MODE_ALBUM, ui->theme.text, ui->defaultColorRGB);
                                 lib_song_iter++;
                         }
+                        lib_row_count++;
                 }
 
                 lib_iter++;
@@ -1780,7 +1915,7 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
 
         FileSystemEntry *child = root->children;
         while (child != NULL) {
-                if (display_tree(child, depth + 1, max_list_size, max_name_width))
+                if (display_tree(child, depth + 1, max_list_size, max_name_width, row, col))
                         foundChosen = true;
 
                 child = child->next;
@@ -1789,9 +1924,111 @@ int display_tree(FileSystemEntry *root, int depth, int max_list_size,
         return foundChosen;
 }
 
+size_t string_hash(const char *str)
+{
+        if (str == NULL)
+                return 0;
+        size_t hash = 5381;
+        int c;
+        while ((c = *str++))
+                hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+        return hash;
+}
+
+void print_side_cover(SongData *songdata)
+{
+        AppState *state = get_app_state();
+        UISettings *ui = &(state->uiSettings);
+
+        if (ui->hideSideCover)
+                return;
+
+        int term_w, term_h;
+        get_term_size(&term_w, &term_h);
+
+        if (state->currentView != last_view)
+                redraw_side_cover = true;
+
+        last_view = state->currentView;
+
+        const char *current_ptr = songdata ? songdata->cover_art_path : NULL;
+        if (current_ptr != last_cover_path_ptr) {
+                last_cover_path_ptr = current_ptr;
+                last_cover_path_hash = current_ptr ? string_hash(current_ptr) : (size_t)-1;
+                redraw_side_cover = true;
+        } else if (current_ptr != NULL) {
+                size_t current_hash = string_hash(current_ptr);
+                if (current_hash != last_cover_path_hash) {
+                        last_cover_path_hash = current_hash;
+                        redraw_side_cover = true;
+                }
+        }
+
+        if (state->currentView == TRACK_VIEW)
+                return;
+
+        int cover_indent = (indent + (indent / 4)) / 8;
+        int row = 2;
+        int col = cover_indent + 3;
+        int target_height = indent - cover_indent;
+
+        if (redraw_side_cover && ui->coverEnabled && term_w - 4 > indent / 2) {
+
+                clear_screen();
+                redraw_side_cover = false;
+
+                if (row < 2)
+                        row = 2;
+
+                if (col < 1)
+                        col = 1;
+
+                TermSize term_size;
+                gint cell_width = -1, cell_height = -1;
+
+                tty_init();
+                get_tty_size(&term_size);
+
+                int max_height = term_h - 4;
+
+                if (target_height > max_height)
+                        target_height = max_height;
+
+                if (term_size.width_cells > 0 && term_size.height_cells > 0 &&
+                    term_size.width_pixels > 0 && term_size.height_pixels > 0) {
+                        cell_width = term_size.width_pixels / term_size.width_cells;
+                        cell_height = term_size.height_pixels / term_size.height_cells;
+                }
+
+                // Set default cell size for some terminals
+                if (cell_width == -1 || cell_height == -1) {
+                        cell_width = 8;
+                        cell_height = 16;
+                }
+
+                float aspect_ratio_correction = (float)cell_height / (float)cell_width;
+                int corrected_width = (int)(target_height * aspect_ratio_correction);
+
+                row = term_h / 2 - (target_height / aspect_ratio_correction / 2);
+
+                while (corrected_width > indent - cover_indent) {
+                        target_height--;
+                        corrected_width = (int)(target_height * aspect_ratio_correction);
+                }
+
+                if (target_height > MIN_COVER_SIZE)
+                {
+                        print_cover(row, col, target_height, false, songdata);
+                }
+        }
+}
+
 void show_library(SongData *song_data, AppSettings *settings)
 {
         AppState *state = get_app_state();
+
+        bool refresh_triggered = is_refresh_triggered();
+
         // For scrolling names, update every nth time
         if (get_is_long_name() && is_same_name_as_last_time &&
             get_update_counter() % scrolling_interval != 0) {
@@ -1836,29 +2073,43 @@ void show_library(SongData *song_data, AppSettings *settings)
         get_term_size(&term_w, &term_h);
         int total_height = term_h;
         max_lib_list_size = total_height;
-        int about_size = print_logo(song_data, ui);
-        int max_name_width = term_w - 10 - indent;
+        int row = 1;
+        int col = indent + (indent / 4);
+        if (ui->hideSideCover)
+                col = indent;
+        int about_size = print_logo(song_data, ui, 1, col + 2);
+
+        int max_name_width = term_w - 10 - indent - (indent / 4);
+        if (ui->hideSideCover)
+                max_name_width = term_w - 10 - indent;
         max_lib_list_size -= about_size + 2;
 
         apply_color(ui->colorMode, ui->theme.help, ui->defaultColorRGB);
 
+        row = about_size + 1;
+        col += 1;
+
         if (term_w > 67 && !ui->hideHelp) {
                 max_lib_list_size -= 3;
-                clear_line();
-                print_blank_spaces(indent);
-                printf(_(" Use ↑/↓ or k/j to select. Enter: Enqueue/Dequeue. Alt+Enter: Play.\n"));
-                clear_line();
-                print_blank_spaces(indent);
+                printf("\033[%d;%dH", row, col);
+                clear_rest_of_line();
+                printf("\033[%d;%dH", row++, col + 1);
+                printf(_(" Select:↑/↓."));
+                printf(_(" Enqueue/Dequeue:%s."), get_binding_string(EVENT_ENQUEUE, true));
+                printf(_(" Play:%s."), get_binding_string(EVENT_ENQUEUEANDPLAY, true));
+                clear_rest_of_line();
+                printf("\033[%d;%dH", row++, col + 1);
+                clear_rest_of_line();
 #ifndef __APPLE__
-                printf(_(" PgUp/PgDn: scroll. u: update, o: sort.\n"));
-                clear_line();
-                printf("\n");
+                printf(_(" Scroll:PgUp/PgDn."));
 #else
-                printf(_(" Fn+↑/↓: scroll. u: update, o: sort.\n"));
-                clear_line();
-                printf("\n");
+                printf(_(" Scroll:Fn+↑/↓."));
 #endif
-                clear_line();
+                printf(_(" Update:%s."), get_binding_string(EVENT_UPDATELIBRARY, true));
+                printf(_(" Sort:%s."), get_binding_string(EVENT_SORTLIBRARY, true));
+                clear_rest_of_line();
+                printf("\033[%d;%dH", row++, col);
+                clear_rest_of_line();
         }
 
         num_top_level_songs = 0;
@@ -1875,12 +2126,15 @@ void show_library(SongData *song_data, AppSettings *settings)
         }
 
         bool foundChosen = false;
+        lib_row_count = 0;
 
         if (max_lib_list_size <= 0)
                 foundChosen = true;
         else
                 foundChosen = display_tree(library, 0, max_lib_list_size,
-                                           max_name_width);
+                                           max_name_width, row, col);
+
+        fflush(stdout);
 
         if (!foundChosen) {
                 chosen_lib_row--;
@@ -1889,22 +2143,21 @@ void show_library(SongData *song_data, AppSettings *settings)
 
         printf("\e[0m");
         apply_color(COLOR_MODE_ALBUM, ui->theme.text,
-                                    ui->defaultColorRGB);
+                    ui->defaultColorRGB);
 
-        for (int i = lib_iter - start_lib_iter; i < max_lib_list_size; i++) {
-                clear_line();
-                printf("\n");
-
+        int empty_lines = max_lib_list_size - lib_row_count;
+        for (int i = 0; i < empty_lines; i++) {
+                printf("\033[%d;%dH", row + lib_row_count + i, col);
+                clear_rest_of_line();
         }
-
-        clear_line();
 
         calc_and_print_last_row_and_error_row();
 
         if (!foundChosen && is_refresh_triggered()) {
                 goto_first_line_first_row();
                 show_library(song_data, settings);
-        }
+        } else if (refresh_triggered)
+                print_side_cover(song_data);
 }
 
 int calc_visualizer_width()
@@ -1940,7 +2193,7 @@ void print_at(int row, int indent, const char *text, int max_width)
         printf("\033[%d;%dH%s", row, indent, buffer);
 }
 
-void print_lyrics_page(UISettings *ui, AppSettings *settings, int row, int col, double seconds, SongData *songdata, int height)
+void print_lyrics_page(UISettings *ui, int row, int col, double seconds, SongData *songdata, int height)
 {
         clear_rest_of_line();
 
@@ -1951,18 +2204,20 @@ void print_lyrics_page(UISettings *ui, AppSettings *settings, int row, int col, 
 
         if (!lyrics || lyrics->count == 0) {
                 printf("\033[%d;%dH", row, col);
-                printf(_(" No lyrics available. Press %s to go back."), settings->showLyricsPage);
+                printf(_(" No lyrics available. Press %s to go back."), get_binding_string(EVENT_SHOWLYRICSPAGE, true));
                 return;
         }
 
-        apply_color(ui->colorMode, ui->theme.trackview_lyrics, ui->color);
-
         int limit = MIN((int)lyrics->count, height);
         int startat = 0;
+        int current = 0;
 
         if (lyrics->isTimed) {
                 for (int i = 0; i < (int)lyrics->count; i++) {
                         if (lyrics->lines[i].timestamp >= seconds) {
+
+                                current = i - 1;
+
                                 if (i > limit && i > 0)
                                         startat = i - 1; // If the current line would have fallen out of view, start at the current line - 1
                                 break;
@@ -1991,6 +2246,10 @@ void print_lyrics_page(UISettings *ui, AppSettings *settings, int row, int col, 
                 if (length < 0)
                         length = 0;
 
+                if (i == current && lyrics->isTimed)
+                        apply_color(ui->colorMode, ui->theme.nowplaying, ui->defaultColorRGB);
+                else
+                        apply_color(ui->colorMode, ui->theme.trackview_lyrics, ui->color);
                 print_at(row + i - startat, col, linebuf, length);
                 clear_rest_of_line();
         }
@@ -2078,8 +2337,7 @@ void show_track_view_landscape(int height, int width, float aspect_ratio,
 
         int col = height * aspect_ratio;
 
-        if (!state->uiSettings.coverEnabled ||
-            (songdata && songdata->cover == NULL))
+        if (!state->uiSettings.coverEnabled)
                 col = 1;
 
         int term_w, term_h;
@@ -2092,8 +2350,10 @@ void show_track_view_landscape(int height, int width, float aspect_ratio,
                 row = 2;
 
         if (is_refresh_triggered()) {
-                print_cover(height, songdata, &(state->uiSettings));
-
+                if (!chroma_is_started()) {
+                        clear_screen();
+                        print_cover(2, 2, height - 2, false, songdata);
+                }
                 if (!state->uiState.showLyricsPage) {
                         if (height > metadata_height)
                                 print_metadata(row, col, visualizer_width - 1,
@@ -2109,6 +2369,11 @@ void show_track_view_landscape(int height, int width, float aspect_ratio,
                 get_format_and_sample_rate(&format, &sample_rate);
 
                 if (!state->uiState.showLyricsPage) {
+
+                        if (chroma_is_started()) {
+                                chroma_print_frame(2, 2, false);
+                        }
+
                         if (height > metadata_height + time_height)
                                 print_time(row + 4, col, elapsed_seconds, sample_rate,
                                            avg_bit_rate, term_w - col);
@@ -2131,7 +2396,7 @@ void show_track_view_landscape(int height, int width, float aspect_ratio,
                         }
                 } else {
                         print_now_playing(songdata, &(state->uiSettings), 2, col, term_w - indent);
-                        print_lyrics_page(&(state->uiSettings), settings, 4, col, elapsed_seconds, songdata, height - 4);
+                        print_lyrics_page(&(state->uiSettings), 4, col, elapsed_seconds, songdata, height - 4);
                 }
         }
 }
@@ -2145,6 +2410,7 @@ void show_track_view_portrait(int height, AppSettings *settings,
 
         int metadata_height = 4;
 
+        int cover_row = 2;
         int row = height + 3;
         int col = indent;
 
@@ -2158,7 +2424,12 @@ void show_track_view_portrait(int height, AppSettings *settings,
                 clear_screen();
 
                 if (!state->uiState.showLyricsPage) {
-                        print_cover_centered(songdata, &(state->uiSettings));
+
+                        if (!chroma_is_started()) {
+                                clear_screen();
+                                print_cover(cover_row, indent, preferred_height, true, songdata);
+                                printf("\n\n");
+                        }
                         print_metadata(row, col, visualizer_width - 1, metadata,
                                        &(state->uiSettings));
                 }
@@ -2170,6 +2441,10 @@ void show_track_view_portrait(int height, AppSettings *settings,
                         ma_uint32 sample_rate;
                         ma_format format;
                         avg_bit_rate = songdata->avg_bit_rate;
+
+                        if (chroma_is_started()) {
+                                chroma_print_frame(2, col + 1, true);
+                        }
 
                         get_format_and_sample_rate(&format, &sample_rate);
                         print_time(row + metadata_height, col, elapsed_seconds, sample_rate,
@@ -2188,24 +2463,72 @@ void show_track_view_portrait(int height, AppSettings *settings,
                         get_term_size(&term_w, &term_h);
                         int lyrics_height = term_h - 5;
                         if (lyrics_height > 0)
-                                print_lyrics_page(&(state->uiSettings), settings, 4, col + 1, elapsed_seconds, songdata, lyrics_height);
+                                print_lyrics_page(&(state->uiSettings), 4, col + 1, elapsed_seconds, songdata, lyrics_height);
                 }
         }
 
         calc_and_print_last_row_and_error_row();
 }
 
+static int lastHeight = 0;
+static time_t last_restart = 0;
+
 void show_track_view(int width, int height, AppSettings *settings,
-                     SongData *songdata, double elapsed_seconds)
+                     SongData *songdata, double elapsed_seconds, UISettings *ui)
 {
+        time_t now = time(NULL);
+
+        bool landscape_layout = false;
         float aspect = get_aspect_ratio();
 
         if (aspect == 0.0f)
                 aspect = 1.0f;
 
         int corrected_width = width / aspect;
+        int cover_height = preferred_height;
 
         if (corrected_width > height * 2) {
+                landscape_layout = true;
+                cover_height = height - 2;
+        }
+
+        if (height != lastHeight && chroma_is_started() && now != last_restart) {
+                last_restart = now;
+                lastHeight = height;
+                chroma_stop();
+                clear_screen();
+                chroma_start(cover_height);
+        }
+
+        if (songdata && ui->visualizations_instead_of_cover && (!chroma_is_started() || next_visualization_requested) && ui->coverEnabled) {
+                if (has_chroma == -1)
+                        has_chroma = chroma_is_installed();
+
+                if (has_chroma == 1) {
+                        lastHeight = height;
+
+                        if (next_visualization_requested) {
+                                clear_screen();
+                                chroma_set_next_preset(cover_height);
+                                trigger_refresh();
+                        } else {
+                                clear_screen();
+                                if (ui->chromaPreset >= 0)
+                                        chroma_set_current_preset(ui->chromaPreset);
+                                chroma_start(cover_height);
+                                trigger_refresh();
+                        }
+
+                        if (!chroma_is_started()) {
+                                ui->visualizations_instead_of_cover = false;
+                                trigger_refresh();
+                        }
+                }
+
+                next_visualization_requested = false;
+        }
+
+        if (landscape_layout) {
                 show_track_view_landscape(height, width, aspect, settings,
                                           songdata, elapsed_seconds);
         } else {
@@ -2247,9 +2570,9 @@ int print_player(SongData *songdata, double elapsed_seconds)
                                 clear_screen();
                         }
 
-                        ui->color.r = ui->kewColorRGB.r;
-                        ui->color.g = ui->kewColorRGB.g;
-                        ui->color.b = ui->kewColorRGB.b;
+                        ui->color.r = ui->defaultColorRGB.r;
+                        ui->color.g = ui->defaultColorRGB.g;
+                        ui->color.b = ui->defaultColorRGB.b;
 
                         if (ui->trackTitleAsWindowTitle)
                                 set_terminal_window_title("kew");
@@ -2266,15 +2589,19 @@ int print_player(SongData *songdata, double elapsed_seconds)
         if (state->currentView != PLAYLIST_VIEW)
                 state->uiState.resetPlaylistDisplay = true;
 
-        if (state->currentView == KEYBINDINGS_VIEW && shouldRefresh) {
-                clear_screen();
+        if ((state->currentView != TRACK_VIEW || is_refresh_triggered()) && chroma_is_started())
+                chroma_stop();
+
+        print_side_cover(songdata);
+
+        if (state->currentView == HELP_VIEW && shouldRefresh) {
                 show_key_bindings(songdata);
                 save_cursor_position();
                 cancel_refresh();
                 fflush(stdout);
         } else if (state->currentView == PLAYLIST_VIEW && shouldRefresh) {
                 show_playlist(songdata, unshuffled_playlist, &chosen_row,
-                              &(uis->chosen_node_id), settings);
+                              &(uis->chosen_node_id));
                 state->uiState.resetPlaylistDisplay = false;
                 fflush(stdout);
         } else if (state->currentView == SEARCH_VIEW && shouldRefresh) {
@@ -2285,7 +2612,7 @@ int print_player(SongData *songdata, double elapsed_seconds)
                 show_library(songdata, settings);
                 fflush(stdout);
         } else if (state->currentView == TRACK_VIEW) {
-                show_track_view(term_w, term_h, settings, songdata, elapsed_seconds);
+                show_track_view(term_w, term_h, settings, songdata, elapsed_seconds, ui);
                 fflush(stdout);
         }
 

@@ -13,17 +13,13 @@
 
 #define __USE_GNU
 
-#ifndef MAXPATHLEN
-#define MAXPATHLEN 4096
+#ifndef PATH_MAX
+#define PATH_MAX 4096
 #endif
 
-#ifndef MUSIC_FILE_EXTENSIONS
 #define MUSIC_FILE_EXTENSIONS "(m4a|aac|mp3|ogg|flac|wav|opus|webm)$"
-#endif
 
-#ifndef AUDIO_EXTENSIONS
 #define AUDIO_EXTENSIONS "(m4a|aac|mp3|ogg|flac|wav|opus|webm|m3u|m3u8)$"
-#endif
 
 enum SearchType {
         SearchAny = 0,

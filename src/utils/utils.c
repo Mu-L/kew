@@ -45,12 +45,12 @@ int get_random_number(int min, int max)
         static int seeded = 0;
         if (!seeded) {
                 srand(time(
-                    NULL)); // Use srandom() to seed the random number generator
+                    NULL));
                 seeded = 1;
         }
 
         return min +
-               (rand() % (max - min + 1)); // Use random() instead of rand()
+               (rand() % (max - min + 1));
 }
 
 #endif
@@ -58,12 +58,9 @@ int get_random_number(int min, int max)
 void c_sleep(int milliseconds)
 {
         struct timespec ts;
-        ts.tv_sec = milliseconds / 1000; // Seconds part
-        // Ensure that the nanoseconds part is computed safely, and no overflow
-        // happens
+        ts.tv_sec = milliseconds / 1000;
         ts.tv_nsec = (milliseconds % 1000) * 1000000;
 
-        // Make sure that nanoseconds is within valid range
         if (ts.tv_nsec >= 1000000000) {
                 ts.tv_sec += ts.tv_nsec / 1000000000;
                 ts.tv_nsec %= 1000000000;
@@ -74,40 +71,29 @@ void c_sleep(int milliseconds)
 
 void c_usleep(int microseconds)
 {
-        if (microseconds < 0 || microseconds > 100000000) // Max 100 seconds
+        if (microseconds < 0 || microseconds > 100000000)
         {
                 return;
         }
 
         struct timespec ts;
         ts.tv_sec = microseconds / 1000000;
-        ts.tv_nsec = (microseconds % 1000000) *
-                     1000; // Convert remaining microseconds to nanoseconds
+        ts.tv_nsec = (microseconds % 1000000) * 1000;
 
         nanosleep(&ts, NULL);
 }
 
 void c_strcpy(char *dest, const char *src, size_t dest_size)
 {
-        // Ensure the destination and source are valid, and dest_size is large
-        // enough to hold at least one byte
         if (dest && src && dest_size > 0) {
-                // Calculate the length of the source string, limited by
-                // dest_size - 1 (for the null terminator)
                 size_t src_length = strnlen(src, dest_size - 1);
-
-                // Ensure we do not write beyond dest_size - 1
                 if (src_length >= dest_size)
                         src_length = dest_size - 1;
 
-                // Safely copy up to src_length bytes from src to dest
                 memcpy(dest, src, src_length);
 
-                // Null-terminate the destination string
                 dest[src_length] = '\0';
-        } else if (dest &&
-                   dest_size >
-                       0) // If source is NULL, we clear the destination buffer
+        } else if (dest && dest_size > 0)
         {
                 dest[0] = '\0';
         }
@@ -124,7 +110,7 @@ char *string_to_lower(const char *str)
                 return NULL;
         }
 
-        size_t length = strnlen(str, MAXPATHLEN);
+        size_t length = strnlen(str, PATH_MAX);
 
         return g_utf8_strdown(str, length);
 }
@@ -135,7 +121,7 @@ char *string_to_upper(const char *str)
                 return NULL;
         }
 
-        size_t length = strnlen(str, MAXPATHLEN);
+        size_t length = strnlen(str, PATH_MAX);
 
         return g_utf8_strup(str, length);
 }
@@ -226,7 +212,7 @@ void extract_extension(const char *filename, size_t ext_size, char *ext)
                 return;
         }
 
-        size_t length = strnlen(filename, MAXPATHLEN);
+        size_t length = strnlen(filename, PATH_MAX);
 
         // Find the last '.' character in the filename
         const char *dot = NULL;
@@ -285,8 +271,8 @@ void extract_extension(const char *filename, size_t ext_size, char *ext)
 
 int path_ends_with(const char *str, const char *suffix)
 {
-        size_t length = strnlen(str, MAXPATHLEN);
-        size_t suffixLength = strnlen(suffix, MAXPATHLEN);
+        size_t length = strnlen(str, PATH_MAX);
+        size_t suffixLength = strnlen(suffix, PATH_MAX);
 
         if (suffixLength > length) {
                 return 0;
@@ -298,8 +284,8 @@ int path_ends_with(const char *str, const char *suffix)
 
 int path_starts_with(const char *str, const char *prefix)
 {
-        size_t length = strnlen(str, MAXPATHLEN);
-        size_t prefixLength = strnlen(prefix, MAXPATHLEN);
+        size_t length = strnlen(str, PATH_MAX);
+        size_t prefixLength = strnlen(prefix, PATH_MAX);
 
         if (prefixLength > length) {
                 return 0;
@@ -354,33 +340,33 @@ const char *get_home_path(void)
 
 char *get_config_path(void)
 {
-        char *config_path = malloc(MAXPATHLEN);
+        char *config_path = malloc(PATH_MAX);
         if (!config_path)
                 return NULL;
 
         const char *xdg_config = getenv("XDG_CONFIG_HOME");
 
         if (xdg_config) {
-                snprintf(config_path, MAXPATHLEN, "%s/kew", xdg_config);
+                snprintf(config_path, PATH_MAX, "%s/kew", xdg_config);
         } else {
                 const char *home = get_home_path();
                 if (home) {
 #ifdef __APPLE__
-                        snprintf(config_path, MAXPATHLEN,
+                        snprintf(config_path, PATH_MAX,
                                  "%s/Library/Preferences/kew", home);
 #else
-                        snprintf(config_path, MAXPATHLEN, "%s/.config/kew",
+                        snprintf(config_path, PATH_MAX, "%s/.config/kew",
                                  home);
 #endif
                 } else {
                         struct passwd *pw = getpwuid(getuid());
                         if (pw) {
 #ifdef __APPLE__
-                                snprintf(config_path, MAXPATHLEN,
+                                snprintf(config_path, PATH_MAX,
                                          "%s/Library/Preferences/kew",
                                          pw->pw_dir);
 #else
-                                snprintf(config_path, MAXPATHLEN,
+                                snprintf(config_path, PATH_MAX,
                                          "%s/.config/kew", pw->pw_dir);
 #endif
                         } else {
@@ -395,29 +381,29 @@ char *get_config_path(void)
 
 char *get_prefs_path(void)
 {
-        char *prefs_path = malloc(MAXPATHLEN);
+        char *prefs_path = malloc(PATH_MAX);
         if (!prefs_path)
                 return NULL;
 
         const char *xdg_state = getenv("XDG_STATE_HOME");
 
         if (xdg_state) {
-                snprintf(prefs_path, MAXPATHLEN, "%s", xdg_state);
+                snprintf(prefs_path, PATH_MAX, "%s", xdg_state);
         } else {
                 const char *home = get_home_path();
                 if (home) {
 #ifdef __APPLE__
-                        snprintf(prefs_path, MAXPATHLEN, "%s/Library/Application Support", home);
+                        snprintf(prefs_path, PATH_MAX, "%s/Library/Application Support", home);
 #else
-                        snprintf(prefs_path, MAXPATHLEN, "%s/.local/state", home);
+                        snprintf(prefs_path, PATH_MAX, "%s/.local/state", home);
 #endif
                 } else {
                         struct passwd *pw = getpwuid(getuid());
                         if (pw) {
 #ifdef __APPLE__
-                                snprintf(prefs_path, MAXPATHLEN, "%s/Library/Application Support", pw->pw_dir);
+                                snprintf(prefs_path, PATH_MAX, "%s/Library/Application Support", pw->pw_dir);
 #else
-                                snprintf(prefs_path, MAXPATHLEN, "%s/.local/state", pw->pw_dir);
+                                snprintf(prefs_path, PATH_MAX, "%s/.local/state", pw->pw_dir);
 #endif
                         } else {
                                 free(prefs_path);
@@ -456,7 +442,6 @@ char *get_file_path(const char *filename)
                 return NULL;
         }
 
-        // Also check it doesn't start with a dot (hidden files)
         if (filename[0] == '.') {
                 return NULL;
         }
@@ -466,12 +451,12 @@ char *get_file_path(const char *filename)
                 return NULL;
         }
 
-        size_t configdir_length = strnlen(configdir, MAXPATHLEN);
-        size_t filename_length = strnlen(filename, MAXPATHLEN);
+        size_t configdir_length = strnlen(configdir, PATH_MAX);
+        size_t filename_length = strnlen(filename, PATH_MAX);
 
         size_t filepath_length = configdir_length + 1 + filename_length + 1;
 
-        if (filepath_length > MAXPATHLEN) {
+        if (filepath_length > PATH_MAX) {
                 free(configdir);
                 return NULL;
         }
@@ -676,14 +661,4 @@ int get_number_from_string(const char *str)
         }
 
         return (int)value;
-}
-
-void str_to_lower(char *str)
-{
-        if (str == NULL)
-                return;
-
-        for (; *str; ++str) {
-                *str = tolower((unsigned char)*str);
-        }
 }

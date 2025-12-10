@@ -65,12 +65,12 @@ void prepare_playlist_string(Node *node, char *buffer, int buffer_size)
                 return;
         }
 
-        if (strnlen(node->song.file_path, MAXPATHLEN) >= MAXPATHLEN) {
+        if (strnlen(node->song.file_path, PATH_MAX) >= PATH_MAX) {
                 buffer[0] = '\0';
                 return;
         }
 
-        char file_path[MAXPATHLEN];
+        char file_path[PATH_MAX];
         c_strcpy(file_path, node->song.file_path, sizeof(file_path));
 
         char *last_slash = strrchr(file_path, '/');
@@ -87,18 +87,19 @@ void prepare_playlist_string(Node *node, char *buffer, int buffer_size)
         }
 }
 
-int display_playlist_items(Node *start_node, int start_iter, int max_list_size,
-                           int term_width, int indent, int chosen_song,
+int display_playlist_items(int row, int col, Node *start_node, int start_iter, int max_list_size,
+                           int term_width, int chosen_song,
                            int *chosen_node_id, UISettings *ui)
 {
         int num_printed_rows = 0;
         Node *node = start_node;
+        int indent = col -1;
 
         if (term_width < 0 || term_width > MAX_TERM_WIDTH || indent < 0 ||
             indent >= term_width)
                 return 0;
 
-        int max_name_width = term_width - indent - 12;
+        int max_name_width = term_width - indent - (indent / 4) - 10;
         if (max_name_width <= 0)
                 return 0;
 
@@ -147,18 +148,21 @@ int display_playlist_items(Node *start_node, int start_iter, int max_list_size,
                 prepare_playlist_string(node, buffer, NAME_MAX);
 
                 if (buffer[0] != '\0') {
-                        if (ui->colorMode == COLOR_MODE_ALBUM || ui->colorMode == COLOR_MODE_THEME)
+                        if (ui->colorMode == COLOR_MODE_ALBUM || (ui->colorMode == COLOR_MODE_THEME &&
+                            ui->theme.playlist_rownum.type == COLOR_TYPE_RGB))
                                 apply_color(COLOR_MODE_ALBUM, ui->theme.playlist_rownum,
                                             row_color);
                         else
                                 apply_color(ui->colorMode, ui->theme.playlist_rownum,
                                             row_color);
 
-                        clear_line();
-                        print_blank_spaces(indent);
+                        printf("\033[%d;%dH", row + num_printed_rows, col);
+                        clear_rest_of_line();
+
                         printf("   %d. ", i + 1);
 
-                        if (ui->colorMode == COLOR_MODE_ALBUM || ui->colorMode == COLOR_MODE_THEME)
+                        if (ui->colorMode == COLOR_MODE_ALBUM || (ui->colorMode == COLOR_MODE_THEME &&
+                            ui->theme.playlist_rownum.type == COLOR_TYPE_RGB))
                                 apply_color(COLOR_MODE_ALBUM, ui->theme.playlist_title,
                                             row_color2);
                         else
@@ -209,7 +213,7 @@ int display_playlist_items(Node *start_node, int start_iter, int max_list_size,
                                 printf("\e[4m");
                         }
 
-                        printf("%s\n", filename);
+                        printf("%s", filename);
 
                         num_printed_rows++;
                 }
@@ -284,7 +288,7 @@ void move_start_node_into_position(int found_at, Node **start_node)
         }
 }
 
-int display_playlist(PlayList *list, int max_list_size, int indent,
+int display_playlist(int row, int col, PlayList *list, int max_list_size,
                      int *chosen_song, int *chosen_node_id, bool reset)
 {
         AppState *state = get_app_state();
@@ -306,12 +310,12 @@ int display_playlist(PlayList *list, int max_list_size, int indent,
 
         move_start_node_into_position(found_at, &start_node);
 
-        int printed_rows = display_playlist_items(start_node, start_iter, max_list_size, term_width,
-                                                  indent, *chosen_song, chosen_node_id, ui);
+        int printed_rows = display_playlist_items(row, col, start_node, start_iter, max_list_size, term_width,
+                                                  *chosen_song, chosen_node_id, ui);
 
         while (printed_rows <= max_list_size) {
-                clear_line();
-                printf("\n");
+                printf("\033[%d;%dH", row + printed_rows, col);
+                clear_rest_of_line();
                 printed_rows++;
         }
 

@@ -13,6 +13,7 @@
 #include "mpris.h"
 #include "notifications.h"
 
+#include "ui/player_ui.h"
 #include "utils/file.h"
 #include "utils/term.h"
 #include "utils/utils.h"
@@ -62,6 +63,7 @@ void resize(UIState *uis)
         alarm(0); // Cancel timer
         printf("\033[1;1H");
         clear_screen();
+        trigger_redraw_side_cover();
         trigger_refresh();
 }
 
@@ -276,7 +278,7 @@ int is_kew_process(pid_t pid)
 
 void delete_pid_file()
 {
-        char pidfile_path[MAXPATHLEN];
+        char pidfile_path[PATH_MAX];
         const char *temp_dir = get_temp_dir();
 
         snprintf(pidfile_path, sizeof(pidfile_path), "%s/kew_%d.pid", temp_dir,
@@ -294,7 +296,7 @@ void delete_pid_file()
 
 pid_t read_pid_file()
 {
-        char pidfile_path[MAXPATHLEN];
+        char pidfile_path[PATH_MAX];
         const char *temp_dir = get_temp_dir();
 
         snprintf(pidfile_path, sizeof(pidfile_path), "%s/kew_%d.pid", temp_dir,
@@ -320,7 +322,7 @@ pid_t read_pid_file()
 
 void create_pid_file()
 {
-        char pidfile_path[MAXPATHLEN];
+        char pidfile_path[PATH_MAX];
         const char *temp_dir = get_temp_dir();
 
         snprintf(pidfile_path, sizeof(pidfile_path), "%s/kew_%d.pid", temp_dir,

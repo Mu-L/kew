@@ -28,7 +28,6 @@
 
 const char PLAYLIST_EXTENSIONS[] = "(m3u8?)$";
 const char favorites_playlist_name[] = "kew favorites.m3u";
-const char last_used_playlist_name[] = "lastPlaylist.m3u";
 
 static char search[MAX_SEARCH_SIZE];
 static char playlist_name[MAX_SEARCH_SIZE];
@@ -169,7 +168,7 @@ Node *delete_from_list(PlayList *list, Node *node)
         return next_node;
 }
 
-void delete_playlist(PlayList *list)
+void empty_playlist(PlayList *list)
 {
         if (list == NULL)
                 return;
@@ -189,7 +188,6 @@ void delete_playlist(PlayList *list)
         list->count = 0;
 
         pthread_mutex_unlock(&list->mutex);
-        pthread_mutex_destroy(&list->mutex);
 }
 
 void shuffle_playlist(PlayList *playlist)
@@ -321,7 +319,7 @@ void exit_if_overflow(int counter)
 void build_playlist_recursive(const char *directory_path,
                               const char *allowed_extensions, PlayList *playlist)
 {
-        char expanded_path[MAXPATHLEN - NAME_MAX - 1];
+        char expanded_path[PATH_MAX - NAME_MAX - 1];
         expand_path(directory_path, expanded_path);
 
         int res = is_directory(expanded_path);
@@ -343,7 +341,7 @@ void build_playlist_recursive(const char *directory_path,
         }
 
         regex_t regex;
-        int ret = regcomp(&regex, allowed_extensions, REG_EXTENDED);
+        int ret = regcomp(&regex, allowed_extensions, REG_EXTENDED | REG_ICASE);
         if (ret != 0) {
                 printf(_("Failed to compile regular expression\n"));
                 closedir(dir);
@@ -369,14 +367,14 @@ void build_playlist_recursive(const char *directory_path,
                         continue;
                 }
 
-                char file_path[FILENAME_MAX];
+                char file_path[PATH_MAX];
                 snprintf(file_path, sizeof(file_path), "%s/%s", expanded_path,
                          entry->d_name);
 
                 size_t pathLen = strnlen(expanded_path, sizeof(expanded_path));
                 size_t nameLen = strnlen(entry->d_name, NAME_MAX);
 
-                if (pathLen + 1 + nameLen >= FILENAME_MAX) {
+                if (pathLen + 1 + nameLen >= PATH_MAX) {
                         fprintf(stderr, "Path too long: %s/%s\n", expanded_path, entry->d_name);
                         return; // or skip this entry
                 }
@@ -453,19 +451,19 @@ void make_playlist_name(const char *search, int max_size)
         }
 }
 
-void read_m3u_file(const char *filepath, PlayList *playlist,
-                    FileSystemEntry *library)
+Node *read_m3u_file(const char *filepath, PlayList *playlist)
 {
         GError *error = NULL;
         gchar *contents;
         gchar **lines;
+        Node *first_in_list = NULL;
 
-        char filename[MAXPATHLEN];
+        char filename[PATH_MAX];
         expand_path(filepath, filename);
 
         if (!g_file_get_contents(filename, &contents, NULL, &error)) {
                 g_clear_error(&error);
-                return;
+                return NULL;
         }
 
         gchar *directory = g_path_get_dirname(filename);
@@ -491,24 +489,24 @@ void read_m3u_file(const char *filepath, PlayList *playlist,
                         if (songPath == NULL)
                                 continue;
 
-                        if (exists_file(songPath) < 0)
-                        {
+                        if (exists_file(songPath) < 0) {
                                 g_free(songPath);
                                 continue;
                         }
                         // Don't add songs that are already enqueued
-                        if (library != NULL) {
-                                FileSystemEntry *entry =
-                                    find_corresponding_entry(library, songPath);
+                        Node *found = find_path_in_playlist(songPath, playlist);
 
-                                if (entry != NULL && entry->is_enqueued) {
-                                        g_free(songPath);
-                                        continue;
-                                }
+                        if (first_in_list == NULL)
+                                first_in_list = found;
+
+                        if (found != NULL) {
+                                g_free(songPath);
+                                continue;
                         }
 
                         Node *new_node = NULL;
-                        create_node(&new_node, songPath, node_id_counter++);
+                        node_id_counter++;
+                        create_node(&new_node, songPath, node_id_counter);
 
                         if (playlist->head == NULL) {
                                 playlist->head = new_node;
@@ -519,6 +517,9 @@ void read_m3u_file(const char *filepath, PlayList *playlist,
                                 playlist->tail = new_node;
                         }
 
+                        if (first_in_list == NULL)
+                                first_in_list = playlist->tail;
+
                         playlist->count++;
 
                         g_free(songPath);
@@ -528,6 +529,8 @@ void read_m3u_file(const char *filepath, PlayList *playlist,
         g_free(directory);
         g_strfreev(lines);
         g_free(contents);
+
+        return first_in_list;
 }
 
 int make_playlist(PlayList **playlist, int argc, char *argv[], bool exact_search, const char *path)
@@ -539,7 +542,7 @@ int make_playlist(PlayList **playlist, int argc, char *argv[], bool exact_search
         int search_type_index = 1;
         PlayList partial_playlist = {NULL, NULL, 0, PTHREAD_MUTEX_INITIALIZER};
 
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
         expand_path(path, expanded_path);
 
         if (strcmp(argv[1], "all") == 0) {
@@ -601,19 +604,19 @@ int make_playlist(PlayList **playlist, int argc, char *argv[], bool exact_search
                 char *token = strtok(search, delimiter);
 
                 while (token != NULL) {
-                        char buf[MAXPATHLEN] = {0};
+                        char buf[PATH_MAX] = {0};
                         if (strncmp(token, "song", 4) == 0) {
                                 memmove(token, token + 4,
-                                        strnlen(token + 4, MAXPATHLEN) + 1);
+                                        strnlen(token + 4, PATH_MAX) + 1);
                                 search_type = FileOnly;
                         }
-                        trim(token, MAXPATHLEN);
+                        trim(token, PATH_MAX);
                         char *searching = g_utf8_casefold(token, -1);
 
                         if (walker(expanded_path, searching, buf, allowed_extensions,
                                    search_type, exact_search, 0) == 0) {
                                 if (strcmp(argv[1], "list") == 0) {
-                                        read_m3u_file(buf, *playlist, NULL);
+                                        read_m3u_file(buf, *playlist);
                                 } else {
                                         pthread_mutex_lock(&((*playlist)->mutex));
 
@@ -654,7 +657,7 @@ void generate_m3_u_filename(const char *base_path, const char *file_path,
         const char *dot = strrchr(base_name, '.');
         if (dot == NULL) {
                 // No '.' found, copy the base name and append ".m3u"
-                if (base_path[strnlen(base_path, MAXPATHLEN) - 1] == '/') {
+                if (base_path[strnlen(base_path, PATH_MAX) - 1] == '/') {
                         snprintf(m3u_filename, size, "%s%s.m3u", base_path, base_name);
                 } else {
                         snprintf(m3u_filename, size, "%s/%s.m3u", base_path, base_name);
@@ -662,7 +665,7 @@ void generate_m3_u_filename(const char *base_path, const char *file_path,
         } else {
                 // Copy the base name up to the dot and append ".m3u"
                 size_t baseNameLen = dot - base_name;
-                if (base_path[strnlen(base_path, MAXPATHLEN) - 1] == '/') {
+                if (base_path[strnlen(base_path, PATH_MAX) - 1] == '/') {
                         snprintf(m3u_filename, size, "%s%.*s.m3u", base_path,
                                  (int)baseNameLen, base_name);
                 } else {
@@ -690,12 +693,12 @@ void write_m3u_file(const char *filename, const PlayList *playlist)
 void load_playlist(const char *directory, const char *playlist_name,
                    PlayList **playlist)
 {
-        char playlist_path[MAXPATHLEN];
+        char playlist_path[PATH_MAX];
 
         if (!directory || !playlist_name || !playlist)
                 return;
 
-        size_t len = strnlen(directory, MAXPATHLEN);
+        size_t len = strnlen(directory, PATH_MAX);
         if (len == 0)
                 return;
 
@@ -709,54 +712,41 @@ void load_playlist(const char *directory, const char *playlist_name,
         }
 
         if (*playlist)
-                read_m3u_file(playlist_path, *playlist, NULL);
+                read_m3u_file(playlist_path, *playlist);
 }
 
 void load_favorites_playlist(const char *directory, PlayList **favorites_playlist)
 {
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
         expand_path(directory, expanded_path);
         load_playlist(directory, favorites_playlist_name, favorites_playlist);
         set_favorites_playlist(*favorites_playlist);
 }
 
-void populate_playlist_from_library(FileSystemEntry *root, PlayList *playlist) {
-    if (!root) return;
-
-    if (root->is_enqueued && root->is_directory == 0) {
-        Node *node = malloc(sizeof(Node));
-        node->song.file_path = strdup(root->full_path);
-        node->prev = playlist->tail;
-        node->next = NULL;
-        node->id = root->id;
-        node->song.duration = 0.0;
-
-        if (playlist->tail)
-            playlist->tail->next = node;
-        else
-            playlist->head = node;
-
-        playlist->tail = node;
-        playlist->count++;
-    }
-
-    for (FileSystemEntry *child = root->children; child; child = child->next)
-        populate_playlist_from_library(child, playlist);
-}
-
-void load_last_used_playlist(PlayList *playlist, PlayList **unshuffled_playlist, FileSystemEntry *root)
+void add_enqueued_songs_to_playlist(FileSystemEntry *root, PlayList *playlist)
 {
-        char *configdir = get_config_path();
+        if (!root)
+                return;
 
-        populate_playlist_from_library(root, playlist);
-        set_playlist(playlist);
+        if (root->is_enqueued && root->is_directory == 0) {
+                Node *node = malloc(sizeof(Node));
+                node->song.file_path = strdup(root->full_path);
+                node->prev = playlist->tail;
+                node->next = NULL;
+                node->id = root->id;
+                node->song.duration = 0.0;
 
-        if (*unshuffled_playlist == NULL) {
-                *unshuffled_playlist = deep_copy_play_list(playlist);
+                if (playlist->tail)
+                        playlist->tail->next = node;
+                else
+                        playlist->head = node;
+
+                playlist->tail = node;
+                playlist->count++;
         }
 
-        if (configdir)
-                free(configdir);
+        for (FileSystemEntry *child = root->children; child; child = child->next)
+                add_enqueued_songs_to_playlist(child, playlist);
 }
 
 void save_named_playlist(const char *directory, const char *playlist_name,
@@ -766,7 +756,7 @@ void save_named_playlist(const char *directory, const char *playlist_name,
                 return;
         }
 
-        char playlist_path[MAXPATHLEN];
+        char playlist_path[PATH_MAX];
 
         int length =
             snprintf(playlist_path, sizeof(playlist_path), "%s", directory);
@@ -791,7 +781,7 @@ void save_named_playlist(const char *directory, const char *playlist_name,
 
 void save_favorites_playlist(const char *directory, PlayList *favorites_playlist)
 {
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
         expand_path(directory, expanded_path);
 
         if (favorites_playlist != NULL && favorites_playlist->count > 0) {
@@ -800,21 +790,13 @@ void save_favorites_playlist(const char *directory, PlayList *favorites_playlist
         }
 }
 
-void save_last_used_playlist(PlayList *unshuffled_playlist)
-{
-        char *configdir = get_config_path();
-        save_named_playlist(configdir, last_used_playlist_name, unshuffled_playlist);
-        if (configdir)
-                free(configdir);
-}
-
 void save_playlist(const char *path, const PlayList *playlist)
 {
         if (path == NULL) {
                 return;
         }
 
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
         expand_path(path, expanded_path);
 
         if (playlist->head == NULL || playlist->head->song.file_path == NULL)
@@ -825,8 +807,8 @@ void save_playlist(const char *path, const PlayList *playlist)
 
 void export_current_playlist(const char *path, const PlayList *playlist)
 {
-        char m3u_filename[MAXPATHLEN];
-        char expanded_path[MAXPATHLEN];
+        char m3u_filename[PATH_MAX];
+        char expanded_path[PATH_MAX];
         expand_path(path, expanded_path);
 
         if (path == NULL || playlist->head == NULL)
@@ -876,7 +858,7 @@ Node *find_tail(Node *head)
         return current;
 }
 
-PlayList *deep_copy_play_list(const PlayList *original_list)
+PlayList *deep_copy_playlist(const PlayList *original_list)
 {
         if (original_list == NULL)
                 return NULL;
@@ -906,6 +888,9 @@ void deep_copy_play_list_onto_list(const PlayList *original_list, PlayList **new
                 memset(*new_list, 0, sizeof(PlayList));
                 pthread_mutex_init(&(*new_list)->mutex, NULL);
         }
+        else if ((*new_list)->count > 0) {
+                empty_playlist(*new_list);
+        }
 
         (*new_list)->head = deep_copy_node(original_list->head);
         (*new_list)->tail = find_tail((*new_list)->head);
@@ -914,6 +899,9 @@ void deep_copy_play_list_onto_list(const PlayList *original_list, PlayList **new
 
 Node *find_path_in_playlist(const char *path, PlayList *playlist)
 {
+        if (!playlist)
+                return NULL;
+
         Node *current_node = playlist->head;
 
         while (current_node != NULL) {
@@ -928,6 +916,9 @@ Node *find_path_in_playlist(const char *path, PlayList *playlist)
 
 Node *find_last_path_in_playlist(const char *path, PlayList *playlist)
 {
+        if (!playlist)
+                return NULL;
+
         Node *current_node = playlist->tail;
 
         while (current_node != NULL) {

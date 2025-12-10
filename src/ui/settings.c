@@ -76,6 +76,7 @@ TBKeyBinding key_bindings[MAX_KEY_BINDINGS] = {
     {0, 'r', 0, EVENT_TOGGLEREPEAT, ""},
     {0, 'i', 0, EVENT_CYCLECOLORMODE, ""},
     {0, 't', 0, EVENT_CYCLETHEMES, ""},
+    {0, 'c', 0, EVENT_CYCLEVISUALIZATION, ""},
     {0, 's', 0, EVENT_SHUFFLE, ""},
     {0, 'a', 0, EVENT_SEEKBACK, ""},
     {0, 'd', 0, EVENT_SEEKFORWARD, ""},
@@ -91,7 +92,7 @@ TBKeyBinding key_bindings[MAX_KEY_BINDINGS] = {
     {0, 'g', 0, EVENT_MOVESONGDOWN, ""},
 
     {TB_KEY_ENTER, 0, 0, EVENT_ENQUEUE, ""},
-    {0, 'G', 0, EVENT_ENQUEUE, ""},
+    {0, 'g', TB_MOD_SHIFT, EVENT_ENQUEUE, ""},
     {TB_KEY_BACKSPACE, 0, 0, EVENT_CLEARPLAYLIST, ""},
     {TB_KEY_ENTER, 0, TB_MOD_ALT, EVENT_ENQUEUEANDPLAY, ""},
 
@@ -158,20 +159,20 @@ static const KeyMap key_map[] = {
     // Navigation / editing
     {"Insert", TB_KEY_INSERT},
     {"Ins", TB_KEY_INSERT},
-    {"Delete", TB_KEY_DELETE},
     {"Del", TB_KEY_DELETE},
+    {"Delete", TB_KEY_DELETE},
     {"Home", TB_KEY_HOME},
     {"End", TB_KEY_END},
-    {"PageUp", TB_KEY_PGUP},
     {"PgUp", TB_KEY_PGUP},
-    {"PageDown", TB_KEY_PGDN},
+    {"PageUp", TB_KEY_PGUP},
     {"PgDn", TB_KEY_PGDN},
+    {"PageDown", TB_KEY_PGDN},
     {"BackTab", TB_KEY_BACK_TAB},
     {"Tab", TB_KEY_TAB},
     {"Backspace", TB_KEY_BACKSPACE},
     {"Enter", TB_KEY_ENTER},
-    {"Escape", TB_KEY_ESC},
     {"Esc", TB_KEY_ESC},
+    {"Escape", TB_KEY_ESC},
     {"Space", TB_KEY_SPACE},
 
     // Modifiers
@@ -319,7 +320,7 @@ const char *get_binding_string(enum EventType event, bool find_only_one)
                 if (found > 0) {
                         if (find_only_one)
                                 return buf;
-                        strncat(buf, " or ", sizeof(buf) - strlen(buf) - 1);
+                        strncat(buf, ", ", sizeof(buf) - strlen(buf) - 1);
                 }
                 strncat(buf, full_key, sizeof(buf) - strlen(buf) - 1);
 
@@ -445,6 +446,7 @@ static const EventMap event_map[] = {
     {"gotoBeginningOfPlaylist", EVENT_GOTOBEGINNINGOFPLAYLIST},
     {"gotoEndOfPlaylist", EVENT_GOTOENDOFPLAYLIST},
     {"cycleColorMode", EVENT_CYCLECOLORMODE},
+    {"cycleVisualization", EVENT_CYCLEVISUALIZATION},
     {"scrollDown", EVENT_SCROLLDOWN},
     {"scrollUp", EVENT_SCROLLUP},
     {"seekBack", EVENT_SEEKBACK},
@@ -628,6 +630,7 @@ void set_default_config(AppSettings *settings)
         c_strcpy(settings->hideLogo, "0", sizeof(settings->hideLogo));
 #endif
         c_strcpy(settings->hideHelp, "0", sizeof(settings->hideHelp));
+        c_strcpy(settings->hideSideCover, "0", sizeof(settings->hideSideCover));
         c_strcpy(settings->visualizer_height, "6",
                  sizeof(settings->visualizer_height));
         c_strcpy(settings->visualizer_color_type, "2",
@@ -881,6 +884,9 @@ void construct_app_settings(AppSettings *settings, KeyValuePair *pairs, int coun
                 } else if (strcmp(lowercase_key, "theme") == 0) {
                         snprintf(settings->theme, sizeof(settings->theme), "%s",
                                  pair->value);
+                } else if (strcmp(lowercase_key, "chromapreset") == 0) {
+                        snprintf(settings->chromaPreset, sizeof(settings->chromaPreset), "%s",
+                                 pair->value);
                 } else if (strcmp(lowercase_key, "coverenabled") == 0) {
                         snprintf(settings->coverEnabled,
                                  sizeof(settings->coverEnabled), "%s",
@@ -1107,6 +1113,9 @@ void construct_app_settings(AppSettings *settings, KeyValuePair *pairs, int coun
                 } else if (strcmp(lowercase_key, "hidehelp") == 0) {
                         snprintf(settings->hideHelp, sizeof(settings->hideHelp),
                                  "%s", pair->value);
+                } else if (strcmp(lowercase_key, "hidesidecover") == 0) {
+                        snprintf(settings->hideSideCover, sizeof(settings->hideSideCover),
+                                 "%s", pair->value);
                 } else if (strcmp(lowercase_key, "quitonstop") == 0) {
                         snprintf(settings->quitAfterStopping,
                                  sizeof(settings->quitAfterStopping), "%s",
@@ -1172,7 +1181,8 @@ void construct_app_settings(AppSettings *settings, KeyValuePair *pairs, int coun
                                 snprintf(settings->move_song_up,
                                          sizeof(settings->move_song_up), "%s",
                                          pair->value);
-                        add_legacy_key_binding(EVENT_MOVESONGUP, pair->value);
+                        // Don't add this since this key 't' should be used for themes
+                        //add_legacy_key_binding(EVENT_MOVESONGUP, pair->value);
                 } else if (strcmp(lowercase_key, "movesongdown") == 0) {
                         if (strcmp(pair->value, "") != 0)
                                 snprintf(settings->move_song_down,
@@ -1294,11 +1304,8 @@ KeyValuePair *read_key_value_pairs(const char *file_path, int *count,
         }
 
         // Save the modification time (mtime) of the file
-#ifdef __APPLE__
         *last_time_app_ran = file_stat.st_mtime;
-#else
-        *last_time_app_ran = file_stat.st_mtime;
-#endif
+
         KeyValuePair *pairs = NULL;
         int pair_count = 0;
 
@@ -1338,7 +1345,7 @@ const char *get_default_music_folder(void)
 {
         const char *home = get_home_path();
         if (home != NULL) {
-                static char music_path[MAXPATHLEN];
+                static char music_path[PATH_MAX];
                 snprintf(music_path, sizeof(music_path), "%s/Music", home);
                 return music_path;
         } else {
@@ -1348,7 +1355,7 @@ const char *get_default_music_folder(void)
 
 int get_music_library_path(char *path)
 {
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
 
         if (path[0] != '\0' && path[0] != '\r') {
                 if (expand_path(path, expanded_path) >= 0) {
@@ -1422,24 +1429,24 @@ void map_settings_to_keys(AppSettings *settings, EventMapping *mappings)
 
 char *get_config_file_path(char *configdir)
 {
-        size_t configdir_length = strnlen(configdir, MAXPATHLEN - 1);
+        size_t configdir_length = strnlen(configdir, PATH_MAX - 1);
         size_t settings_file_length =
             strnlen(SETTINGS_FILE, sizeof(SETTINGS_FILE) - 1);
 
-        if (configdir_length + 1 + settings_file_length + 1 > MAXPATHLEN) {
+        if (configdir_length + 1 + settings_file_length + 1 > PATH_MAX) {
                 fprintf(stderr, "Error: File path exceeds maximum length.\n");
                 exit(1);
         }
 
-        char *filepath = (char *)malloc(MAXPATHLEN);
+        char *filepath = (char *)malloc(PATH_MAX);
         if (filepath == NULL) {
                 perror("malloc");
                 exit(1);
         }
 
         int written =
-            snprintf(filepath, MAXPATHLEN, "%s/%s", configdir, SETTINGS_FILE);
-        if (written < 0 || written >= MAXPATHLEN) {
+            snprintf(filepath, PATH_MAX, "%s/%s", configdir, SETTINGS_FILE);
+        if (written < 0 || written >= PATH_MAX) {
                 fprintf(stderr,
                         "Error: snprintf failed or filepath truncated.\n");
                 free(filepath);
@@ -1450,22 +1457,22 @@ char *get_config_file_path(char *configdir)
 
 char *get_prefs_file_path(char *prefsdir)
 {
-        size_t dir_length = strnlen(prefsdir, MAXPATHLEN - 1);
+        size_t dir_length = strnlen(prefsdir, PATH_MAX - 1);
         size_t file_length = strnlen(STATE_FILE, sizeof(STATE_FILE) - 1);
 
-        if (dir_length + 1 + file_length + 1 > MAXPATHLEN) {
+        if (dir_length + 1 + file_length + 1 > PATH_MAX) {
                 fprintf(stderr, "Error: File path exceeds maximum length.\n");
                 exit(1);
         }
 
-        char *filepath = (char *)malloc(MAXPATHLEN);
+        char *filepath = (char *)malloc(PATH_MAX);
         if (filepath == NULL) {
                 perror("malloc");
                 exit(1);
         }
 
-        int written = snprintf(filepath, MAXPATHLEN, "%s/%s", prefsdir, STATE_FILE);
-        if (written < 0 || written >= MAXPATHLEN) {
+        int written = snprintf(filepath, PATH_MAX, "%s/%s", prefsdir, STATE_FILE);
+        if (written < 0 || written >= PATH_MAX) {
                 fprintf(stderr, "Error: snprintf failed or filepath truncated.\n");
                 free(filepath);
                 exit(1);
@@ -1493,7 +1500,7 @@ int mkdir_p(const char *path, mode_t mode)
         size_t len;
 
         snprintf(tmp, sizeof(tmp), "%s", path);
-        len = strnlen(tmp, MAXPATHLEN);
+        len = strnlen(tmp, PATH_MAX);
         if (len > 0 && tmp[len - 1] == '/')
                 tmp[len - 1] = 0;
 
@@ -1541,6 +1548,14 @@ void get_prefs(AppSettings *settings, UISettings *ui)
         int tmp = get_number(settings->repeatState);
         if (tmp >= 0)
                 ui->repeatState = tmp;
+
+        if (settings->chromaPreset[0] != '\0')
+        {
+                tmp = get_number(settings->chromaPreset);
+
+                if (tmp >= 0)
+                        ui->chromaPreset = tmp;
+        }
 
         tmp = get_number(settings->colorMode);
         if (tmp >= 0 && tmp < 3) {
@@ -1661,6 +1676,8 @@ void set_prefs(AppSettings *settings, UISettings *ui)
         fprintf(file, "coverAnsi=%s\n\n", settings->coverAnsi);
         fprintf(file, "[visualizer]\n\n");
         fprintf(file, "visualizerEnabled=%s\n\n", settings->visualizerEnabled);
+        fprintf(file, "[chroma]\n\n");
+        fprintf(file, "chromaPreset=%d\n\n", ui->chromaPreset);
         fprintf(file, "[colors]\n\n");
         fprintf(file, "colorMode=%d\n\n", ui->colorMode);
         fprintf(file, "theme=%s\n\n", ui->theme_name);
@@ -1786,7 +1803,7 @@ void set_config(AppSettings *settings, UISettings *ui)
         if (settings->visualizer_bar_width[0] == '\0')
                 snprintf(settings->visualizer_bar_width,
                          sizeof(settings->visualizer_bar_width), "%d",
-                         ui->visualizer_bar_width);
+                         ui->visualizer_bar_mode);
 
         if (settings->visualizerBrailleMode[0] == '\0')
                 ui->visualizerBrailleMode
@@ -1804,7 +1821,11 @@ void set_config(AppSettings *settings, UISettings *ui)
                                         sizeof(settings->hideHelp))
                              : c_strcpy(settings->hideHelp, "0",
                                         sizeof(settings->hideHelp));
-
+        if (settings->hideSideCover[0] == '\0')
+                ui->hideSideCover ? c_strcpy(settings->hideSideCover, "1",
+                                        sizeof(settings->hideSideCover))
+                             : c_strcpy(settings->hideSideCover, "0",
+                                        sizeof(settings->hideSideCover));
         if (settings->visualizer_height[0] == '\0')
                 snprintf(settings->visualizer_height,
                          sizeof(settings->visualizer_height), "%d",
@@ -1828,6 +1849,7 @@ void set_config(AppSettings *settings, UISettings *ui)
         fprintf(file, "allowNotifications=%s\n", settings->allowNotifications);
         fprintf(file, "hideLogo=%s\n", settings->hideLogo);
         fprintf(file, "hideHelp=%s\n", settings->hideHelp);
+        fprintf(file, "hideSideCover=%s\n\n", settings->hideSideCover);
 
         fprintf(file, "# Delay when drawing title in track view, set to 0 to "
                       "have no delay.\n");

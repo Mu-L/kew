@@ -2,11 +2,11 @@
 
 ### 3.7.0
 
-Biggest news in this release: Optimisations for large music collections/slow disks and a key binding/input handling overhaul. Both were very much needed.
+Biggest news in this release: Optimisations for large music collections/slow disks and a key binding/input handling overhaul.
 
-- Optimisations: Much faster loading of previous playlist. So if you are used to running kew all for instance this will be significantly faster, especially for people with large collections. The new method should be up to 20 times faster.
+- Optimisations: Faster loading of previous playlist. So if you are used to running kew all for instance this will be significantly faster, especially for people with large collections. The new method should be up to 20 times faster for loading a big last used playlist.
 
-- The library is now always cached. This means no more fiddling with cachelibrary settings. It scans the library only if the files have changed, which it checks at the top level. This will be much faster if you have music on a slow disk. But it's all still very simple, no database dependencies or anything, just a flat binary file with the bare essentials. It's not a lot of data: 1k songs = 60KiB on disk.
+- The library is now always cached. It scans the library only if the files have changed, which it checks at the top level. This will be much faster if you have music on a slow disk. But it's all still very simple, no database dependencies or anything, just a flat binary file with the bare essentials. It's not a lot of data: 1k songs = 60KiB on disk.
 
 - Key binding overhaul: This allows for more advanced key bindings. You can now bind more keys and key combinations. The new format was suggested by @jaoh.
 
@@ -24,13 +24,43 @@ The old format config files will still work for the most part, but to see exampl
 
 - Auto-scrolling lyrics in the lyrics page for synced lyrics. Also added the ability to scroll lyrics manually. By @noiamnote.
 
-- The app and readme has been translated into chinese. Thank you for the help @hiruocha.
+- The app and readme has been translated into japanese and chinese. Thank you for help with the chinese translation @hiruocha.
 
-- One more theme: catpuccin mocha by @pixel-peeper.
+- New theme: catpuccin mocha by @pixel-peeper.
+
+- New theme: neutral, uses only the default foreground color.
+
+- The cover is now visible on the left side on most views. Can be disabled by setting hideSideCover=1 in the config file.
+
+- Reverted to being neutral in album color mode when no music is playing.
 
 #### Bug Fixes
 
 - Don't enqueue the .m3u files themselves when mass enqueueing.
+
+- Fixes a bug related to certain types of mp3 files, where the song metadata wasn't switching in the UI. Found by: @Chromium-3-Oxide.
+
+- Fixes a bug in library view where under some conditions, the position of the selected row could jump upwards.
+
+- Made the path validation function less strict to avoid false positives. Reported by: DimaFyodorov.
+
+- Removed hardcoded paths in Makefile to avoid conflicting paths. Found by @hpjansson.
+
+- Fixed a few minor bugs with the library UI. Found by @bholroyd.
+
+- Fixed full width characters not displayed in notifications. Found by @Chromium-3-Oxide.
+
+#### Contributors
+
+Thank you also especially to contributors @jaoh, @bholroyd, @LeahTheSlug, @Chromium-3-Oxide and @hpjansson, @Vafone for reporting many issues and helping out.
+
+Thank you to @bholroyd for making the kew theme editor: https://bholroyd.github.io/Kew-tip/
+
+Thank you to all the beta testers!
+
+#### Sponsors
+
+Thank you to Christian Mummelthey, imalee.sk and @sandrock. for their donations.
 
 ### 3.6.4
 

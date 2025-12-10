@@ -102,11 +102,14 @@ void set_music_path(void)
         ui->color.g = ui->kewColorRGB.g;
         ui->color.b = ui->kewColorRGB.b;
 
-        printf("\n\n\n\n");
+        ui->colorMode = COLOR_MODE_ALBUM;
 
-        print_logo_art(ui, 0, true, true, false);
+        int row = 4;
+        int col = 1;
 
-        printf("\n\n\n\n");
+        print_logo_art(row, col, ui, true, true, false);
+
+        printf("\033[%d;%dH", row + 4, col);
 
         apply_color(COLOR_MODE_ALBUM, ui->theme.text, ui->defaultColorRGB);
 
@@ -119,9 +122,9 @@ void set_music_path(void)
             "Müzik", "Musikk", "Μουσική", "Muzyka", "Hudba", "Musiikki",
             "Zene", "Muzică", "เพลง", "מוזיקה"};
 
-        char path[MAXPATHLEN];
+        char path[PATH_MAX];
         int found = -1;
-        char choice[MAXPATHLEN];
+        char choice[PATH_MAX];
 
         AppSettings *settings = get_app_settings();
         for (size_t i = 0;
@@ -142,7 +145,7 @@ void set_music_path(void)
                         print_blank_spaces(indent);
                         printf(_("Is this correct? Press Enter.\n\n"));
                         print_blank_spaces(indent);
-                        printf(_("Or type a path (no quotes or single-quotes):\n\n"));
+                        printf(_("Or type a path:\n\n"));
                         print_blank_spaces(indent);
 
                         apply_color(COLOR_MODE_ALBUM, ui->theme.text, ui->kewColorRGB);
@@ -167,7 +170,7 @@ void set_music_path(void)
 
         // No standard music folder was found
         if (found < 1) {
-                printf(_("Type a path (no quotes or single-quotes):\n\n"));
+                printf(_("Type a path:\n\n"));
                 print_blank_spaces(indent);
                 apply_color(COLOR_MODE_ALBUM, ui->theme.text, ui->kewColorRGB);
 
@@ -180,6 +183,12 @@ void set_music_path(void)
 
         print_blank_spaces(indent);
         choice[strcspn(choice, "\n")] = '\0';
+
+        size_t len = strlen(choice);
+        if (len > 1 && choice[0] == '"' && choice[len - 1] == '"') {
+                memmove(choice, choice + 1, len - 2);
+                choice[len - 2] = '\0';
+        }
 
         // Set the path if the chosen directory exists
         if (directory_exists(choice)) {

@@ -24,10 +24,13 @@
 typedef struct
 {
         char *path;
+        bool wait_until_complete;
         AppState *state;
 } UpdateLibraryThreadArgs;
 
-int current_sort = 0;
+static int current_sort = 0;
+
+static bool updating_library = false;
 
 void reset_sort_library(void)
 {
@@ -159,8 +162,10 @@ typedef struct
 
 void *update_library_thread(void *arg)
 {
-        if (arg == NULL)
+        if (arg == NULL || updating_library)
                 return NULL;
+
+        updating_library = true;
 
         UpdateLibraryArgs *args = arg;
         FileSystemEntry *library = get_library();
@@ -169,7 +174,7 @@ void *update_library_thread(void *arg)
         AppState *state = args->state;
         int tmp_directory_tree_entries = 0;
 
-        char expanded_path[MAXPATHLEN];
+        char expanded_path[PATH_MAX];
         expand_path(path, expanded_path);
 
         FileSystemEntry *tmp =
@@ -178,6 +183,9 @@ void *update_library_thread(void *arg)
         if (!tmp) {
                 perror("create_directory_tree");
                 pthread_mutex_unlock(&(state->switch_mutex));
+                free(args->path);
+                free(args);
+                updating_library = false;
                 return NULL;
         }
 
@@ -185,8 +193,9 @@ void *update_library_thread(void *arg)
 
         copy_is_enqueued(library, tmp);
 
+        set_library(tmp);
         free_tree(library);
-        library = tmp;
+
         state->uiState.numDirectoryTreeEntries = tmp_directory_tree_entries;
 
         pthread_mutex_unlock(&(state->switch_mutex));
@@ -197,11 +206,12 @@ void *update_library_thread(void *arg)
 
         free(args->path);
         free(args);
+        updating_library = false;
 
         return NULL;
 }
 
-void update_library(char *path)
+void update_library(char *path, bool wait_until_complete)
 {
         AppState *state = get_app_state();
         pthread_t thread_id;
@@ -218,6 +228,11 @@ void update_library(char *path)
                 perror("Failed to create thread");
                 return;
         }
+
+        if (wait_until_complete)
+                pthread_join(thread_id, NULL);
+
+        state->uiSettings.last_time_app_ran = time(NULL);
 }
 
 time_t get_modification_time(struct stat *path_stat)
@@ -230,6 +245,7 @@ void *update_if_top_level_folders_mtimes_changed_thread(void *arg)
         UpdateLibraryThreadArgs *args = (UpdateLibraryThreadArgs *)
             arg; // Cast `arg` back to the structure pointer
         char *path = args->path;
+
         AppState *state = args->state;
         UISettings *ui = &(state->uiSettings);
 
@@ -244,7 +260,7 @@ void *update_if_top_level_folders_mtimes_changed_thread(void *arg)
 
         if (get_modification_time(&path_stat) > ui->last_time_app_ran &&
             ui->last_time_app_ran > 0) {
-                update_library(path);
+                update_library(path, args->wait_until_complete);
                 if (args->path)
                         free(args->path);
                 free(args);
@@ -280,7 +296,7 @@ void *update_if_top_level_folders_mtimes_changed_thread(void *arg)
                         if (get_modification_time(&path_stat) >
                                 ui->last_time_app_ran &&
                             ui->last_time_app_ran > 0) {
-                                update_library(path);
+                                update_library(path, args->wait_until_complete);
                                 break;
                         }
                 }
@@ -296,7 +312,7 @@ void *update_if_top_level_folders_mtimes_changed_thread(void *arg)
 }
 
 // This only checks the library mtime and toplevel subfolders mtimes
-void update_library_if_changed_detected(void)
+void update_library_if_changed_detected(bool wait_until_complete)
 {
         AppState *state = get_app_state();
         pthread_t tid;
@@ -309,16 +325,17 @@ void update_library_if_changed_detected(void)
 
         AppSettings *settings = get_app_settings();
 
-        char expanded[MAXPATHLEN];
+        char expanded[PATH_MAX];
         expand_path(settings->path, expanded);
 
-        args->path = strdup(expanded); // ✅ Make a heap copy of the string
+        args->path = strdup(expanded);
         if (args->path == NULL) {
                 perror("strdup");
                 free(args);
                 return;
         }
 
+        args->wait_until_complete = wait_until_complete;
         args->state = state;
 
         if (pthread_create(&tid, NULL,
@@ -328,15 +345,18 @@ void update_library_if_changed_detected(void)
                 free(args->path);
                 free(args);
         }
+
+        if (wait_until_complete)
+                pthread_join(tid, NULL);
 }
 
-void create_library()
+void create_library(bool set_enqueued_status)
 {
         AppSettings *settings = get_app_settings();
         AppState *state = get_app_state();
-        FileSystemEntry *library = get_library();
+        FileSystemEntry *library = NULL;
 
-        char expanded[MAXPATHLEN];
+        char expanded[PATH_MAX];
 
         expand_path(settings->path, expanded);
 
@@ -344,27 +364,34 @@ void create_library()
 
         library = read_tree_from_binary(
             lib_path, expanded,
-            &(state->uiState.numDirectoryTreeEntries));
+            &(state->uiState.numDirectoryTreeEntries), set_enqueued_status);
 
         free(lib_path);
 
-        update_library_if_changed_detected();
+        set_library(library);
 
-        if (library == NULL || library->children == NULL) {
+        bool wait_until_complete = true;
+        update_library_if_changed_detected(wait_until_complete);
 
-                char expanded[MAXPATHLEN];
+        library = get_library();
+
+        bool library_path_changed = false;
+        if (library && strcmp(library->full_path, expanded) != 0)
+                library_path_changed = true;
+
+        if (library == NULL || library->children == NULL || library_path_changed) {
+
+                char expanded[PATH_MAX];
 
                 expand_path(settings->path, expanded);
 
-                library = create_directory_tree(
-                    expanded, &(state->uiState.numDirectoryTreeEntries));
+                library = create_directory_tree(expanded, &(state->uiState.numDirectoryTreeEntries));
         }
 
         if (library == NULL || library->children == NULL) {
-                char message[MAXPATHLEN + 64];
+                char message[PATH_MAX + 64];
 
-                snprintf(message, MAXPATHLEN + 64, "No music found at %s.",
-                         settings->path);
+                snprintf(message, PATH_MAX + 64, "No music found at %s.", settings->path);
 
                 set_error_message(message);
         }
@@ -391,6 +418,33 @@ void enqueue_song(FileSystemEntry *child)
 
         child->is_enqueued = 1;
         child->parent->is_enqueued = 1;
+}
+
+void set_childrens_queued_status_on_parents(FileSystemEntry *parent, bool wanted_status)
+{
+        if (parent == NULL)
+                return;
+
+        bool is_enqueued = false;
+
+        FileSystemEntry *ch = parent->children;
+
+        while (ch != NULL) {
+                if (ch->is_enqueued) {
+                        is_enqueued = true;
+                        break;
+                }
+                ch = ch->next;
+        }
+
+        if (is_enqueued == wanted_status) {
+                parent->is_enqueued = wanted_status;
+        }
+
+        parent = parent->parent;
+
+        if (parent && parent->parent != NULL)
+                set_childrens_queued_status_on_parents(parent, wanted_status);
 }
 
 void dequeue_song(FileSystemEntry *child)
@@ -426,24 +480,6 @@ void dequeue_song(FileSystemEntry *child)
 
         child->is_enqueued = 0;
 
-        // Check if parent needs to be dequeued as well
-        bool is_enqueued = false;
-
-        FileSystemEntry *ch = child->parent->children;
-
-        while (ch != NULL) {
-                if (ch->is_enqueued) {
-                        is_enqueued = true;
-                        break;
-                }
-                ch = ch->next;
-        }
-
-        if (!is_enqueued) {
-                child->parent->is_enqueued = 0;
-                if (child->parent->parent != NULL)
-                        child->parent->parent->is_enqueued = 0;
-        }
 }
 
 void dequeue_children(FileSystemEntry *parent)
@@ -459,12 +495,19 @@ void dequeue_children(FileSystemEntry *parent)
 
                 child = child->next;
         }
+
+        set_childrens_queued_status_on_parents(parent, false);
 }
 
 int enqueue_children(FileSystemEntry *child,
                      FileSystemEntry **first_enqueued_entry)
 {
         int has_enqueued = 0;
+
+        if (!child)
+                return has_enqueued;
+
+        FileSystemEntry *parent = child->parent;
 
         while (child != NULL) {
                 if (child->is_directory && child->children != NULL) {
@@ -482,9 +525,16 @@ int enqueue_children(FileSystemEntry *child,
                                 has_enqueued = 1;
                         }
                 }
+                else if (child->is_directory == 0 && child->is_enqueued)
+                {
+                        has_enqueued = 1;
+                }
 
                 child = child->next;
         }
+
+        set_childrens_queued_status_on_parents(parent, true);
+
         return has_enqueued;
 }
 

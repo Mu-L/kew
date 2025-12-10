@@ -121,6 +121,7 @@ void transfer_settings_to_ui(void)
         ui->allowNotifications = (settings->allowNotifications[0] == '1');
         ui->coverEnabled = (settings->coverEnabled[0] == '1');
         ui->coverAnsi = (settings->coverAnsi[0] == '1');
+        ui->hideHelp = (settings->hideHelp[0] == '1');
         ui->visualizerEnabled = (settings->visualizerEnabled[0] == '1');
         ui->quitAfterStopping = (settings->quitAfterStopping[0] == '1');
         ui->hideGlimmeringText = (settings->hideGlimmeringText[0] == '1');
@@ -128,7 +129,7 @@ void transfer_settings_to_ui(void)
         ui->shuffle_enabled = (settings->shuffle_enabled[0] == '1');
         ui->visualizerBrailleMode = (settings->visualizerBrailleMode[0] == '1');
         ui->hideLogo = (settings->hideLogo[0] == '1');
-        ui->hideHelp = (settings->hideHelp[0] == '1');
+        ui->hideSideCover = (settings->hideSideCover[0] == '1');
         ui->saveRepeatShuffleSettings =
             (settings->saveRepeatShuffleSettings[0] == '1');
         ui->trackTitleAsWindowTitle =
@@ -221,7 +222,7 @@ void transfer_settings_to_ui(void)
 
         tmp = get_number(settings->visualizer_bar_width);
         if (tmp >= 0)
-                ui->visualizer_bar_width = tmp;
+                ui->visualizer_bar_mode = tmp;
 
         tmp = get_number(settings->visualizer_color_type);
         if (tmp >= 0)
@@ -302,8 +303,8 @@ void reset_name_scroll()
  */
 
 struct interval {
-        int first;
-        int last;
+        wchar_t first;
+        wchar_t last;
 };
 
 // Auxiliary function for binary search in interval table
@@ -474,7 +475,7 @@ void process_name(const char *name, char *output, int max_width,
         const char *last_dot = strrchr(name, '.');
 
         if (last_dot != NULL && strip_suffix) {
-                char tmp[MAXPATHLEN];
+                char tmp[PATH_MAX];
                 size_t len = last_dot - name + 1;
                 if (len >= sizeof(tmp))
                         len = sizeof(tmp) - 1;

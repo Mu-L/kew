@@ -41,6 +41,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
 #include "sys/notifications.h"
 #include "sys/sys_integration.h"
 
+#include "ui/chroma.h"
 #include "ui/cli.h"
 #include "ui/common_ui.h"
 #include "ui/control_ui.h"
@@ -119,7 +120,7 @@ void prepare_next_song(void)
 
         Node *current = get_current_song();
 
-        if (!ops_is_repeat_enabled() || current == NULL) {
+        if (!is_repeat_enabled() || current == NULL) {
                 unload_previous_song();
         }
 
@@ -160,7 +161,7 @@ int prepare_and_play_song(Node *song)
         finish_loading();
 
         if (res >= 0) {
-                res = playback_create();
+                res = create_playback_device();
         }
 
         if (res >= 0) {
@@ -232,12 +233,12 @@ void load_waiting_music(void)
                 if (ps->songHasErrors)
                         try_load_next();
 
-                if (ops_is_done()) {
+                if (is_EOF_reached()) {
                         prepare_next_song();
-                        playback_switch_decoder();
+                        switch_audio_implementation();
                 }
         } else {
-                ops_set_EOF_handled();
+                set_EOF_handled();
         }
 }
 
@@ -295,7 +296,7 @@ void run(bool start_playing)
         UserData *user_data = audio_data.pUserData;
 
         if (unshuffled_playlist == NULL) {
-                set_unshuffled_playlist(deep_copy_play_list(playlist));
+                set_unshuffled_playlist(deep_copy_playlist(playlist));
         }
 
         if (state->uiSettings.saveRepeatShuffleSettings) {
@@ -315,6 +316,10 @@ void run(bool start_playing)
 
         init_mpris();
 
+        if (state->uiSettings.chromaPreset >= 0) {
+                chroma_set_current_preset(state->uiSettings.chromaPreset);
+                state->uiSettings.visualizations_instead_of_cover = true;
+        }
         ps->loadedNextSong = false;
         if (start_playing)
                 ps->waitingForPlaylist = true;
@@ -335,16 +340,37 @@ void run(bool start_playing)
         fflush(stdout);
 }
 
-void kew_init(void)
+void init_locale(void)
+{
+        setlocale(LC_ALL, "");
+        setlocale(LC_CTYPE, "");
+#ifdef __ANDROID__
+        // Termux prefix
+        const char *locale_dir = "/data/data/com.termux/files/usr/share/locale";
+#elif __APPLE__
+        const char *locale_dir = "/usr/local/share/locale";
+#else
+        const char *locale_dir = "/usr/share/locale";
+#endif
+        bindtextdomain("kew", locale_dir);
+        textdomain("kew");
+}
+
+void kew_init(bool set_library_enqueued_status)
 {
         AppState *state = get_app_state();
+
+        set_nonblocking_mode();
 
         disable_terminal_line_input();
         init_resize();
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &state->uiState.windowSize);
         enable_scrolling();
-        set_nonblocking_mode();
+
         init_input();
+
+        // This is to not stop Chroma when we can't keep up with it, instead just return an error
+        signal(SIGPIPE, SIG_IGN);
 
         PlaybackState *ps = get_playback_state();
         UserData *user_data = audio_data.pUserData;
@@ -366,20 +392,9 @@ void kew_init(void)
         pthread_mutex_init(&(playlist->mutex), NULL);
         free_search_results();
         reset_chosen_dir();
-        create_library();
-        setlocale(LC_ALL, "");
-        setlocale(LC_CTYPE, "");
-#ifdef __ANDROID__
-        // Termux prefix
-        const char *locale_dir = "/data/data/com.termux/files/usr/share/locale";
-#elif __APPLE__
-        const char *locale_dir = "/usr/local/share/locale";
-#else
-        const char *locale_dir = "/usr/share/locale";
-#endif
-        bindtextdomain("kew", locale_dir);
-        textdomain("kew");
+        create_library(set_library_enqueued_status);
         state->uiSettings.LAST_ROW = _(" [F2 Playlist|F3 Library|F4 Track|F5 Search|F6 Help]");
+        clear_screen();
         fflush(stdout);
 
 #ifdef DEBUG
@@ -396,16 +411,17 @@ void kew_init(void)
 
 void init_default_state(void)
 {
-        kew_init();
+        bool set_library_enqueued_status = true;
+        kew_init(set_library_enqueued_status);
 
         AppState *state = get_app_state();
         FileSystemEntry *library = get_library();
         PlayList *playlist = get_playlist();
-        PlayList *unshuffled_playlist = get_unshuffled_playlist();
         PlaybackState *ps = get_playback_state();
 
-        load_last_used_playlist(playlist, &unshuffled_playlist, library);
-        set_unshuffled_playlist(unshuffled_playlist);
+        add_enqueued_songs_to_playlist(library, playlist);
+
+        set_unshuffled_playlist(deep_copy_playlist(playlist));
 
         reset_list_after_dequeuing_playing_song();
 
@@ -424,7 +440,6 @@ void kew_shutdown()
         PlaybackState *ps = get_playback_state();
         FileSystemEntry *library = get_library();
         AppSettings *settings = get_app_settings();
-        PlayList *unshuffled_playlist = get_unshuffled_playlist();
         PlayList *favorites_playlist = get_favorites_playlist();
 
 #ifndef __ANDROID__
@@ -433,11 +448,18 @@ void kew_shutdown()
 
         pthread_mutex_lock(&(state->data_source_mutex));
 
-        playback_shutdown();
+        sound_shutdown();
 
-        playback_free_decoders();
+        free_decoders();
 
         emit_playback_stopped_mpris();
+
+        if (chroma_is_started())
+                state->uiSettings.chromaPreset = chroma_get_current_preset();
+        else
+                state->uiSettings.chromaPreset = -1;
+
+        chroma_stop();
 
         bool noMusicFound = false;
 
@@ -447,21 +469,19 @@ void kew_shutdown()
 
         UserData *user_data = audio_data.pUserData;
 
-        playback_unload_songs(user_data);
+        unload_songs(user_data);
 
 #ifdef CHAFA_VERSION_1_16
         retire_passthrough_workarounds_tmux();
 #endif
-
+        bool wait_until_complete = true;
+        update_library_if_changed_detected(wait_until_complete);
         shutdown_input();
         free_search_results();
         cleanup_mpris();
-        restore_terminal_mode();
-        enable_input_buffering();
         set_path(settings->path);
         set_prefs(settings, &(state->uiSettings));
         save_favorites_playlist(settings->path, favorites_playlist);
-        save_last_used_playlist(unshuffled_playlist);
         delete_cache(state_ptr->tmpCache);
         save_library();
         free_library();
@@ -491,12 +511,13 @@ void kew_shutdown()
                 perror("freopen error");
         }
 
+        if (state_ptr->uiSettings.mouseEnabled)
+                disable_terminal_mouse_buttons();
+
         printf("\n");
         show_cursor();
         exit_alternate_screen_buffer();
-
-        if (state_ptr->uiSettings.mouseEnabled)
-                disable_terminal_mouse_buttons();
+        restore_terminal_mode();
 
         if (state_ptr->uiSettings.trackTitleAsWindowTitle)
                 restore_terminal_window_title();
@@ -535,7 +556,7 @@ void init_state(void)
         state->uiSettings.visualizer_height = 5;
         state->uiSettings.visualizer_color_type = 0;
         state->uiSettings.visualizerBrailleMode = false;
-        state->uiSettings.visualizer_bar_width = 2;
+        state->uiSettings.visualizer_bar_mode = 2;
         state->uiSettings.titleDelay = 9;
         state->uiSettings.cacheLibrary = -1;
         state->uiSettings.mouseEnabled = true;
@@ -578,6 +599,8 @@ void init_state(void)
         state->uiSettings.kewColorRGB.r = 222;
         state->uiSettings.kewColorRGB.g = 43;
         state->uiSettings.kewColorRGB.b = 77;
+        state->uiSettings.chromaPreset = -1;
+        state->uiSettings.visualizations_instead_of_cover = false;
 
         PlaybackState *ps = get_playback_state();
 
@@ -611,11 +634,35 @@ void init_state(void)
         state_ptr = state;
 }
 
+void force_terminal_restore(int sig)
+{
+    ssize_t res;
+
+    // Show cursor
+    res = write(STDOUT_FILENO, "\033[?25h", 7);
+    (void)res;
+
+    // Leave alternate screen
+    res = write(STDOUT_FILENO, "\033[?1049l", 8);
+    (void)res;
+
+    // Disable mouse
+    res = write(STDOUT_FILENO, "\033[?1000l", 9);
+    (void)res;
+
+    // Restore default handler for this signal
+    signal(sig, SIG_DFL);
+
+    // Re-raise the signal so the kernel prints the crash message
+    raise(sig);
+}
+
 int main(int argc, char *argv[])
 {
         AppState *state = get_app_state();
 
         init_state();
+        init_locale();
         restart_if_already_running(argv);
 
         AppSettings *settings = get_app_settings();
@@ -631,7 +678,7 @@ int main(int argc, char *argv[])
                                  strcmp(argv[1], "-v") == 0)) {
                 state->uiSettings.colorMode = COLOR_MODE_ALBUM;
                 state->uiSettings.color = state->uiSettings.defaultColorRGB;
-                print_about(NULL);
+                print_about_for_version(NULL);
                 exit(0);
         }
 
@@ -641,7 +688,7 @@ int main(int argc, char *argv[])
         set_track_title_as_window_title();
 
         if (argc == 3 && (strcmp(argv[1], "path") == 0)) {
-                char de_expanded[MAXPATHLEN];
+                char de_expanded[PATH_MAX];
                 collapse_path(argv[2], de_expanded);
                 c_strcpy(settings->path, de_expanded, sizeof(settings->path));
                 set_path(settings->path);
@@ -651,6 +698,10 @@ int main(int argc, char *argv[])
         enable_mouse(&(state->uiSettings));
         enter_alternate_screen_buffer();
         atexit(kew_shutdown);
+
+        signal(SIGINT, force_terminal_restore);
+        signal(SIGSEGV, force_terminal_restore);
+        signal(SIGABRT, force_terminal_restore);
 
         if (settings->path[0] == '\0') {
                 set_music_path();
@@ -667,19 +718,19 @@ int main(int argc, char *argv[])
         if (argc == 1) {
                 init_default_state();
         } else if (argc == 2 && strcmp(argv[1], "all") == 0) {
-                kew_init();
+                kew_init(false);
                 play_all();
                 run(true);
         } else if (argc == 2 && strcmp(argv[1], "albums") == 0) {
-                kew_init();
+                kew_init(false);
                 play_all_albums();
                 run(true);
         } else if (argc == 2 && strcmp(argv[1], ".") == 0 && favorites_playlist->count != 0) {
-                kew_init();
+                kew_init(false);
                 play_favorites_playlist();
                 run(true);
         } else if (argc >= 2) {
-                kew_init();
+                kew_init(false);
                 make_playlist(&playlist, argc, argv, exact_search, settings->path);
 
                 if (playlist->count == 0) {
