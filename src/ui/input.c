@@ -47,7 +47,7 @@
 
 const int COOLDOWN_MS = 500;
 const int COOLDOWN2_MS = 100;
-const int COOLDOWN3_MS = 500;
+const int COOLDOWN3_MS = 250;
 const int COOLDOWNDIGITS_MS = 1500;
 const int MOUSE_DRAG = 32;
 const int MOUSE_CLICK = 0;
@@ -627,9 +627,14 @@ static gboolean on_tb_input(GIOChannel *source, GIOCondition cond, gpointer data
                 memset(&last_ev, 0, sizeof(last_ev));
                 bool found_event = false;
 
+                struct Event event;
+                event.type = EVENT_NONE;
+                event.args[0] = '\0';
+                event.key[0] = '\0';
+
                 // Extract all events in the buffer
                 while (tb_peek_event(&ev, 0) == 0) {
-                        bool isMouseEvent = handle_mouse_event(&ev, NULL);
+                        bool isMouseEvent = handle_mouse_event(&ev, &event);
                         if (isMouseEvent || map_tb_key_to_event(&ev).type != EVENT_NONE) {
                                 last_ev = ev;
                                 found_event = true;
@@ -640,11 +645,6 @@ static gboolean on_tb_input(GIOChannel *source, GIOCondition cond, gpointer data
                         return TRUE;
 
                 // Process only the last event
-                struct Event event;
-                event.type = EVENT_NONE;
-                event.args[0] = '\0';
-                event.key[0] = '\0';
-
                 bool isMouseEvent = handle_mouse_event(&last_ev, &event);
                 if (!isMouseEvent) {
                         event = map_tb_key_to_event(&last_ev);
