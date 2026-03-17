@@ -47,6 +47,7 @@
 
 const int COOLDOWN_MS = 500;
 const int COOLDOWN2_MS = 100;
+const int COOLDOWN3_MS = 500;
 const int COOLDOWNDIGITS_MS = 1500;
 const int MOUSE_DRAG = 32;
 const int MOUSE_CLICK = 0;
@@ -584,9 +585,13 @@ static gboolean on_tb_input(GIOChannel *source, GIOCondition cond, gpointer data
         seq[0] = '\0';
 
         bool cooldown2Elapsed = false;
+        bool cooldownEnqueueElapsed = false;
 
         if (is_cooldown_elapsed(COOLDOWN2_MS))
                 cooldown2Elapsed = true;
+
+        if (is_cooldown_elapsed(COOLDOWN3_MS))
+                cooldownEnqueueElapsed = true;
 
         // Drain all available input
         while (1) {
@@ -618,66 +623,85 @@ static gboolean on_tb_input(GIOChannel *source, GIOCondition cond, gpointer data
                         bytebuf_nputs(&global.in, seq, seq_length); // feed entire sequence at once
                 }
 
+                struct tb_event last_ev;
+                memset(&last_ev, 0, sizeof(last_ev));
+                bool found_event = false;
+
+                // Extract all events in the buffer
+                while (tb_peek_event(&ev, 0) == 0) {
+                        bool isMouseEvent = handle_mouse_event(&ev, NULL);
+                        if (isMouseEvent || map_tb_key_to_event(&ev).type != EVENT_NONE) {
+                                last_ev = ev;
+                                found_event = true;
+                        }
+                }
+
+                if (!found_event)
+                        return TRUE;
+
+                // Process only the last event
                 struct Event event;
                 event.type = EVENT_NONE;
                 event.args[0] = '\0';
                 event.key[0] = '\0';
 
-                // Extract all events in the buffer
-                while (tb_peek_event(&ev, 0) == 0) {
-                        bool isMouseEvent = handle_mouse_event(&ev, &event);
+                bool isMouseEvent = handle_mouse_event(&last_ev, &event);
+                if (!isMouseEvent) {
+                        event = map_tb_key_to_event(&last_ev);
+                }
 
-                        if (!isMouseEvent) {
-                                event = map_tb_key_to_event(&ev);
+                if (isdigit(ev.ch) && event.type == EVENT_NONE) {
+
+                        if (digits_pressed_count == 0) {
+                                update_last_input_time();
                         }
 
-                        if (isdigit(ev.ch) && event.type == EVENT_NONE) {
+                        if (digits_pressed_count < max_digits_pressed_count)
+                                digits_pressed[digits_pressed_count++] = ev.ch;
+                }
 
-                                if (digits_pressed_count == 0) {
-                                        update_last_input_time();
-                                }
-
-                                if (digits_pressed_count < max_digits_pressed_count)
-                                        digits_pressed[digits_pressed_count++] = ev.ch;
+                if (event.type != EVENT_NONE) {
+                        // Throttle scroll/seek/page events
+                        switch (event.type) {
+                        case EVENT_SCROLLUP:
+                        case EVENT_SCROLLDOWN:
+                        case EVENT_SEEKBACK:
+                        case EVENT_SEEKFORWARD:
+                        case EVENT_NEXTPAGE:
+                        case EVENT_PREVPAGE:
+                        case EVENT_NEXT:
+                        case EVENT_PREV:
+                                if (should_throttle(&event))
+                                        return TRUE;
+                                break;
+                        default:
+                                break;
                         }
 
-                        if (event.type != EVENT_NONE) {
-                                // Throttle scroll/seek/page events
-                                switch (event.type) {
-                                case EVENT_SCROLLUP:
-                                case EVENT_SCROLLDOWN:
-                                case EVENT_SEEKBACK:
-                                case EVENT_SEEKFORWARD:
-                                case EVENT_NEXTPAGE:
-                                case EVENT_PREVPAGE:
-                                case EVENT_NEXT:
-                                case EVENT_PREV:
-                                        if (should_throttle(&event))
-                                                continue;
-                                        break;
-                                default:
-                                        break;
-                                }
-
-                                // Handle seek/remove cooldown
-                                if (!cooldown2Elapsed &&
-                                    (event.type == EVENT_REMOVE || event.type == EVENT_SEEKBACK ||
-                                     event.type == EVENT_SEEKFORWARD))
-                                        event.type = EVENT_NONE;
-                                else if (event.type == EVENT_REMOVE || event.type == EVENT_SEEKBACK ||
-                                         event.type == EVENT_SEEKFORWARD) {
-                                        update_last_input_time();
-                                }
-                                // Forget Numbers
-                                if (event.type != EVENT_ENQUEUE &&
-                                    event.type != EVENT_GOTOENDOFPLAYLIST && event.type != EVENT_NONE) {
-                                        reset_digits_pressed();
-                                }
-
-                                handle_event(&event);
-
-                                return TRUE;
+                        // Handle seek/remove cooldown
+                        if (!cooldown2Elapsed &&
+                            (event.type == EVENT_REMOVE || event.type == EVENT_SEEKBACK ||
+                             event.type == EVENT_SEEKFORWARD))
+                                event.type = EVENT_NONE;
+                        else if (event.type == EVENT_REMOVE || event.type == EVENT_SEEKBACK ||
+                                 event.type == EVENT_SEEKFORWARD) {
+                                update_last_input_time();
                         }
+
+                        if (!cooldownEnqueueElapsed && (event.type == EVENT_ENQUEUE || event.type == EVENT_ENQUEUEANDPLAY || event.type == EVENT_UPDATELIBRARY))
+                                event.type = EVENT_NONE;
+                        else if ((event.type == EVENT_ENQUEUE || event.type == EVENT_ENQUEUEANDPLAY || event.type == EVENT_UPDATELIBRARY))
+                                update_last_input_time();
+
+                        // Forget Numbers
+                        if (event.type != EVENT_ENQUEUE &&
+                            event.type != EVENT_GOTOENDOFPLAYLIST && event.type != EVENT_NONE) {
+                                reset_digits_pressed();
+                        }
+
+                        handle_event(&event);
+
+                        return TRUE;
                 }
         }
 
