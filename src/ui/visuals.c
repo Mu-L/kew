@@ -522,6 +522,8 @@ void draw_spectrum_visualizer(sound_system_t *system, int row, int col, int heig
                 return;
         }
 
+        sound_system_update_audio_buffer(sound_s);
+
         int fft_size = sound_system_get_fft_size(sound_s);
 
         if (fft_size != prev_fft_size) {

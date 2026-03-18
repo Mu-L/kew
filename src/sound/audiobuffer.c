@@ -7,7 +7,7 @@
  */
 #include "audiobuffer.h"
 
-#include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 
 static int fft_size = 2048;
@@ -17,6 +17,11 @@ static int write_head = 0;
 static bool buffer_ready = false;
 
 static float audio_buffer[MAX_BUFFER_SIZE];
+
+#define VIZ_RB_SIZE 65536
+static float viz_rb[VIZ_RB_SIZE];
+static _Atomic int viz_rb_write = 0;
+static _Atomic int viz_rb_read = 0;
 
 int closest_power_of_two(int x)
 {
@@ -45,120 +50,58 @@ ma_int32 unpack_s24(const ma_uint8 *p)
         return sample;
 }
 
-void set_audio_buffer(void *buf, int num_frames, ma_uint32 sample_rate,
-                      ma_uint32 channels, ma_format format)
+void viz_rb_push(const float *src, ma_uint32 frames, ma_uint32 channels)
 {
-        int buf_index = 0;
+    int write = atomic_load_explicit(&viz_rb_write, memory_order_relaxed);
+    ma_uint32 total = frames * channels;
 
-        // Dynamically determine FFT and hop size
-        float hop_fraction = 0.25f; // 25% hop (75% overlap)
+    ma_uint32 first = VIZ_RB_SIZE - (write % VIZ_RB_SIZE);
+    if (first > total) first = total;
 
-        // Compute power-of-two window/hop sizes in samples
+    memcpy(&viz_rb[write % VIZ_RB_SIZE], src, first * sizeof(float));
+
+    if (total > first) {
+        memcpy(&viz_rb[0], src + first, (total - first) * sizeof(float));
+    }
+
+    atomic_store_explicit(&viz_rb_write, write + total, memory_order_relaxed);
+}
+
+void prepare_vis_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels)
+{
+        int write = atomic_load_explicit(&viz_rb_write, memory_order_relaxed);
+        int read = atomic_load_explicit(&viz_rb_read, memory_order_relaxed);
+        int available = write - read;
+
+        if (available < (int)channels)
+                return;
+
         int want_fft_samples = (int)(fft_size_milliseconds * sample_rate / 1000.0f);
-        fft_size = closest_power_of_two(want_fft_samples); // 2048 or 4096
-        int want_hop_samples =
-            (int)(fft_size * hop_fraction);                // 25% of window length
-        hop_size = closest_power_of_two(want_hop_samples); // 256, 512, 1024
-
+        fft_size = closest_power_of_two(want_fft_samples);
+        hop_size = closest_power_of_two((int)(fft_size * 0.25f));
         if (fft_size > MAX_BUFFER_SIZE)
                 fft_size = MAX_BUFFER_SIZE;
-
-        // Ensure hop is never >= window
         if (hop_size >= fft_size)
-                hop_size = fft_size / 2; // fallback minimum overlap
+                hop_size = fft_size / 2;
 
-        while (buf_index < num_frames) {
+        while (available >= (int)channels && write_head < fft_size) {
+                float sum = 0.0f;
+                for (ma_uint32 ch = 0; ch < channels; ch++) {
+                        sum += viz_rb[read % VIZ_RB_SIZE];
+                        read++;
+                        available--;
+                }
+                audio_buffer[write_head++] = sum / channels;
 
-                if (write_head >= fft_size)
-                        break;
-
-                int frames_left = num_frames - buf_index;
-                int space_left = fft_size - write_head;
-                int frames_to_copy =
-                    frames_left < space_left ? frames_left : space_left;
-
-                switch (format) {
-                case ma_format_u8: {
-                        ma_uint8 *src = (ma_uint8 *)buf + buf_index * channels;
-                        for (int i = 0; i < frames_to_copy; ++i) {
-                                float sum = 0.0f;
-                                for (ma_uint32 ch = 0; ch < channels; ++ch) {
-                                        // Convert 0..255 to -1..1
-                                        sum += ((float)src[i * channels + ch] -
-                                                128.0f) /
-                                               128.0f;
-                                }
-                                audio_buffer[write_head++] = sum / channels;
-                        }
-                        break;
-                }
-                case ma_format_s16: {
-                        ma_int16 *src = (ma_int16 *)buf + buf_index * channels;
-                        for (int i = 0; i < frames_to_copy; ++i) {
-                                float sum = 0.0f;
-                                for (ma_uint32 ch = 0; ch < channels; ++ch) {
-                                        sum += (float)src[i * channels + ch] /
-                                               32768.0f;
-                                }
-                                audio_buffer[write_head++] = sum / channels;
-                        }
-                        break;
-                }
-                case ma_format_s24: {
-                        ma_uint8 *src =
-                            (ma_uint8 *)buf + buf_index * channels * 3;
-                        for (int i = 0; i < frames_to_copy; ++i) {
-                                float sum = 0.0f;
-                                for (ma_uint32 ch = 0; ch < channels; ++ch) {
-                                        int idx = i * channels * 3 + ch * 3;
-                                        int32_t s = unpack_s24(&src[idx]);
-                                        sum += (float)s / 8388608.0f;
-                                }
-                                audio_buffer[write_head++] = sum / channels;
-                        }
-                        break;
-                }
-                case ma_format_s32: {
-                        int32_t *src = (int32_t *)buf + buf_index * channels;
-                        for (int i = 0; i < frames_to_copy; ++i) {
-                                float sum = 0.0f;
-                                for (ma_uint32 ch = 0; ch < channels; ++ch) {
-                                        sum += (float)src[i * channels + ch] /
-                                               2147483648.0f;
-                                }
-                                audio_buffer[write_head++] = sum / channels;
-                        }
-                        break;
-                }
-                case ma_format_f32: {
-                        float *src = (float *)buf + buf_index * channels;
-                        for (int i = 0; i < frames_to_copy; ++i) {
-                                float sum = 0.0f;
-                                for (ma_uint32 ch = 0; ch < channels; ++ch) {
-                                        sum += src[i * channels + ch];
-                                }
-                                audio_buffer[write_head++] = sum / channels;
-                        }
-                        break;
-                }
-                default:
-                        fprintf(stderr,
-                                "Unsupported format in set_audio_buffer!\n");
-                        return;
-                }
-                buf_index += frames_to_copy;
-
-                // Process full window(s), maintain overlap (hop)
-                while (write_head >= fft_size) {
-                        set_buffer_ready(true); // let main loop know FFT is ready
-
-                        // Shift buffer for overlap (keep last fft_size-hop_size
-                        // samples)
+                if (write_head >= fft_size) {
+                        set_buffer_ready(true);
                         memmove(audio_buffer, audio_buffer + hop_size,
                                 sizeof(float) * (fft_size - hop_size));
                         write_head -= hop_size;
                 }
         }
+
+        atomic_store_explicit(&viz_rb_read, read, memory_order_relaxed);
 }
 
 void reset_audio_buffer(void)

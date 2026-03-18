@@ -178,6 +178,8 @@ int init_playback_device(ma_context *context, sound_system_t *sound,
         deviceConfig.sampleRate = sound->sample_rate;
         deviceConfig.dataCallback = data_callback;
         deviceConfig.pUserData = pUserData;
+        deviceConfig.periodSizeInMilliseconds = 50;
+        deviceConfig.periods = 4;
 
         sound_s->sample_rate = sound->sample_rate;
         sound_s->format = sound->format;
@@ -206,8 +208,6 @@ int init_playback_device(ma_context *context, sound_system_t *sound,
 void stop_decode_thread(void)
 {
         atomic_store(&sound_s->decode_thread_running, false);
-
-        sound_wake_up();
 
         if (sound_s->decode_thread_active) {
                 pthread_join(sound_s->decode_thread, NULL);
@@ -277,14 +277,9 @@ bool is_decoder_type_switch_reached(void)
         return atomic_load(&switch_reached) ? true : false;
 }
 
-void set_decoder_type_switch_reached(void)
+void set_decoder_type_switch_reached(bool value)
 {
-        atomic_store(&switch_reached, true);
-}
-
-void set_decoder_type_switch_not_reached(void)
-{
-        atomic_store(&switch_reached, false);
+        atomic_store(&switch_reached, value);
 }
 
 enum decoder_type_t get_current_decoder_type(void)
