@@ -209,6 +209,10 @@ void stop_decode_thread(void)
 {
         atomic_store(&sound_s->decode_thread_running, false);
 
+        pthread_mutex_lock(&sound_s->wake_mutex);
+        pthread_cond_broadcast(&sound_s->wake_cond);
+        pthread_mutex_unlock(&sound_s->wake_mutex);
+
         if (sound_s->decode_thread_active) {
                 pthread_join(sound_s->decode_thread, NULL);
                 sound_s->decode_thread_active = false;

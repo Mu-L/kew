@@ -427,11 +427,18 @@ void *decode_loop(void *arg)
                         ma_uint32 framesWritten = 0;
 
                         while (framesRemaining > 0 && atomic_load(&sound->decode_thread_running)) {
+
+                                if (atomic_load_explicit(&sound->pending_switch, memory_order_acquire) ||
+                                    atomic_load_explicit(&sound->switch_files, memory_order_acquire)) {
+                                        break;
+                                }
+
                                 ma_uint32 framesToWrite = framesRemaining;
                                 void *pWriteBuffer = NULL;
-
                                 ma_result wr = ma_pcm_rb_acquire_write(&pcm_rb, &framesToWrite, &pWriteBuffer);
+
                                 if (wr != MA_SUCCESS || framesToWrite == 0) {
+                                        // Wait briefly if ring buffer is full or failed
                                         struct timespec ts;
                                         clock_gettime(CLOCK_REALTIME, &ts);
                                         ts.tv_nsec += 500000; // 0.5 ms
@@ -440,14 +447,16 @@ void *decode_loop(void *arg)
                                                 ts.tv_nsec -= 1000000000;
                                         }
                                         pthread_mutex_lock(&sound->wake_mutex);
-                                        pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
+                                        if (atomic_load(&sound->decode_thread_running))
+                                                pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
                                         pthread_mutex_unlock(&sound->wake_mutex);
                                         continue;
                                 }
 
-                                memcpy(pWriteBuffer, temp + framesWritten * sound->channels,
-                                       framesToWrite * sound->channels * sizeof(float));
-
+                                memcpy(
+                                    pWriteBuffer,
+                                    temp + framesWritten * sound->channels,
+                                    framesToWrite * sound->channels * sizeof(float));
                                 ma_pcm_rb_commit_write(&pcm_rb, framesToWrite);
 
                                 framesWritten += framesToWrite;
@@ -470,83 +479,47 @@ void on_audio_frames(ma_device *device,
                      const void *input,
                      ma_uint32 frameCount)
 {
-        (void)device;
-        (void)input;
+    (void)device;
+    (void)input;
 
-        const ma_uint32 frameSize = sound_s->channels * sizeof(float);
-        const ma_uint32 low_threshold = sound_s->sample_rate / 5;  // ~200ms
-        const ma_uint32 high_threshold = sound_s->sample_rate / 2; // ~500m
+    const ma_uint32 frameSize = sound_s->channels * sizeof(float);
+    ma_uint32 framesRemaining = frameCount;
+    uint8_t *writePtr = (uint8_t *)pOutput;
 
-        // Require minimum fill before playback
-        ma_uint32 available = ma_pcm_rb_available_read(&pcm_rb);
+    atomic_fetch_add_explicit(&sound_s->track_frames_sent, frameCount, memory_order_relaxed);
 
-        bool low = available < low_threshold;
-        bool recover = available > high_threshold;
+    while (framesRemaining > 0) {
+        ma_uint32 framesToRead = framesRemaining;
+        void *pReadBuffer = NULL;
 
-        bool low_flag = atomic_load_explicit(&sound_s->buffer_low, memory_order_relaxed);
+        ma_result result = ma_pcm_rb_acquire_read(&pcm_rb, &framesToRead, &pReadBuffer);
 
-        if (low_flag && !recover) {
-                memset(pOutput, 0, frameCount * frameSize);
-                underrun_count++;
-                return;
+        if (result != MA_SUCCESS || framesToRead == 0 || pReadBuffer == NULL) {
+            // Fill remaining frames with silence
+            memset(writePtr, 0, framesRemaining * frameSize);
+            break;
         }
 
-        if (low_flag && recover) {
-                atomic_store_explicit(&sound_s->buffer_low, false, memory_order_relaxed);
-        } else if (!low_flag && low) {
-                atomic_store_explicit(&sound_s->buffer_low, true, memory_order_relaxed);
+        size_t bytesToCopy = framesToRead * frameSize;
+        memcpy(writePtr, pReadBuffer, bytesToCopy);
+        ma_pcm_rb_commit_read(&pcm_rb, framesToRead);
+
+        writePtr += bytesToCopy;
+        framesRemaining -= framesToRead;
+    }
+
+    // Check if we need to switch
+    if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
+        uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
+        uint64_t boundary = atomic_load_explicit(&sound_s->track_end_frame, memory_order_relaxed);
+
+        if (played >= boundary) {
+            atomic_store_explicit(&sound_s->pending_switch, true, memory_order_relaxed);
         }
+    }
 
-        ma_uint32 framesRemaining = frameCount;
-        ma_uint32 totalFramesRead = 0;
-
-        uint8_t *out = (uint8_t *)pOutput;
-        uint8_t *writePtr = out;
-
-        while (framesRemaining > 0) {
-
-                ma_uint32 framesToRead = framesRemaining;
-                void *pReadBuffer = NULL;
-
-                ma_result result =
-                    ma_pcm_rb_acquire_read(&pcm_rb,
-                                           &framesToRead,
-                                           &pReadBuffer);
-
-                if (result != MA_SUCCESS || framesToRead == 0 || pReadBuffer == NULL) {
-
-                        memset((uint8_t *)pOutput + totalFramesRead * frameSize,
-                               0,
-                               framesRemaining * frameSize);
-
-                        totalFramesRead += framesRemaining;
-                        break;
-                }
-
-                size_t bytesToCopy = framesToRead * frameSize;
-                memcpy(writePtr, pReadBuffer, bytesToCopy);
-                writePtr += bytesToCopy;
-
-                ma_pcm_rb_commit_read(&pcm_rb, framesToRead);
-                pthread_cond_signal(&sound_s->wake_cond);
-
-                totalFramesRead += framesToRead;
-                framesRemaining -= framesToRead;
-
-                atomic_fetch_add_explicit(&sound_s->track_frames_sent, framesToRead, memory_order_relaxed);
-
-                if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
-                        uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
-                        uint64_t boundary = atomic_load_explicit(&sound_s->track_end_frame, memory_order_relaxed);
-
-                        if (played >= boundary) {
-                                atomic_store_explicit(&sound_s->pending_switch, true, memory_order_relaxed);
-                        }
-                }
-        }
-
-        // Write to the ringbuffer that holds data for the spectrum visualizer
-        viz_rb_push(pOutput, totalFramesRead, sound_s->channels);
+    // Spectrum visualizer
+    viz_rb_push(pOutput, frameCount, sound_s->channels);
 }
 
 int handle_codec(
