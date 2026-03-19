@@ -313,7 +313,6 @@ void *decode_loop(void *arg)
         sound_system_t *sound = (sound_system_t *)arg;
 
         size_t tempSize = sound->chunk_frames * sound->channels * sizeof(float);
-
         float *temp = NULL;
 
         if (posix_memalign((void **)&temp, 64, tempSize) != 0) {
@@ -322,12 +321,11 @@ void *decode_loop(void *arg)
         }
 
         lastCursor = 0;
-
         set_decode_thread_priority(pthread_self());
 
         while (atomic_load(&sound->decode_thread_running)) {
 
-                // Activate switch
+                // Handle pending switch
                 if (atomic_load_explicit(&sound->pending_switch, memory_order_acquire)) {
                         atomic_store_explicit(&sound->pending_switch, false, memory_order_release);
                         atomic_store_explicit(&sound->decode_finished, false, memory_order_release);
@@ -335,7 +333,7 @@ void *decode_loop(void *arg)
                         continue;
                 }
 
-                // Execute switch
+                // Handle file switch
                 if (atomic_load_explicit(&sound->switch_files, memory_order_acquire)) {
                         atomic_store(&sound->buffer_ready, 0);
                         atomic_store_explicit(&sound->decode_finished, false, memory_order_release);
@@ -343,60 +341,48 @@ void *decode_loop(void *arg)
                         continue;
                 }
 
+                // Decoder type switch reached
                 if (get_current_decoder_type() != get_current_decoder_decoder_type() ||
                     is_decoder_type_switch_reached()) {
                         break;
                 }
 
+                // Wait until ringbuffer has enough space
                 ma_uint32 threshold = sound->sample_rate / 2;
-                atomic_store(&sound->buffer_ready, 1);
+
                 pthread_mutex_lock(&sound->wake_mutex);
                 while (ma_pcm_rb_available_write(&pcm_rb) < threshold &&
                        atomic_load(&sound->decode_thread_running) &&
                        !atomic_load(&sound->switch_files) &&
                        !atomic_load(&sound->pending_switch)) {
 
-                        // Spin briefly for a few iterations
-                        int spins = 0;
-                        while (spins < 50 && ma_pcm_rb_available_write(&pcm_rb) < threshold) {
-                                cpu_relax();
-                                spins++;
+                        struct timespec ts;
+                        clock_gettime(CLOCK_REALTIME, &ts);
+                        ts.tv_nsec += 2000000; // 2ms
+                        if (ts.tv_nsec >= 1000000000) {
+                                ts.tv_sec++;
+                                ts.tv_nsec -= 1000000000;
                         }
-
-                        // If still not enough space, sleep via timed wait (2ms)
-                        if (ma_pcm_rb_available_write(&pcm_rb) < threshold) {
-                                struct timespec ts;
-                                clock_gettime(CLOCK_MONOTONIC, &ts);
-                                ts.tv_nsec += 2000000; // 2ms
-                                if (ts.tv_nsec >= 1000000000) {
-                                        ts.tv_sec++;
-                                        ts.tv_nsec -= 1000000000;
-                                }
-                                pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
-                        }
+                        pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
                 }
                 pthread_mutex_unlock(&sound->wake_mutex);
 
-                // Pause
+                // Handle pause
                 while (pb_is_paused() && atomic_load(&sound->decode_thread_running)) {
                         c_sleep(5);
-                        continue;
                 }
 
+                // Determine frames to decode
                 ma_uint32 writable = ma_pcm_rb_available_write(&pcm_rb);
                 if (writable == 0)
                         continue;
 
-                ma_uint32 frames_to_decode = writable;
-                if (frames_to_decode > sound->chunk_frames)
-                        frames_to_decode = sound->chunk_frames;
+                ma_uint32 frames_to_decode = (writable > sound->chunk_frames) ? sound->chunk_frames : writable;
 
                 const CodecOps *ops = get_codec_ops(get_current_decoder_decoder_type());
                 void *decoder = get_current_decoder();
-
                 if (!decoder || !atomic_load(&sound->decode_thread_running)) {
-                        cpu_relax();
-                        continue;
+                        continue; // skip until next iteration
                 }
 
                 if (!perform_seek_if_requested(decoder))
@@ -404,11 +390,7 @@ void *decode_loop(void *arg)
 
                 // Decode
                 ma_uint64 frames_to_read = 0;
-                ma_result result = ma_data_source_read_pcm_frames(
-                    decoder,
-                    temp,
-                    frames_to_decode,
-                    &frames_to_read);
+                ma_result result = ma_data_source_read_pcm_frames(decoder, temp, frames_to_decode, &frames_to_read);
 
                 long long cursor = 0;
                 ops->get_cursor(decoder, &cursor);
@@ -420,6 +402,7 @@ void *decode_loop(void *arg)
                         apply_gain_f32(temp, total, gain);
                 }
 
+                // Handle end-of-track switching
                 if (!atomic_load(&sound->pending_switch) &&
                     !atomic_load(&sound->decode_finished) &&
                     should_switch(frames_to_read, result, (ma_uint64)cursor)) {
@@ -430,45 +413,34 @@ void *decode_loop(void *arg)
                         } else {
                                 int sent = atomic_load(&sound->track_frames_sent) +
                                            ma_pcm_rb_available_read(&pcm_rb);
-
                                 atomic_store_explicit(&sound->track_end_frame, sent, memory_order_release);
                                 atomic_store_explicit(&sound->decode_finished, true, memory_order_release);
                         }
-
                         continue;
                 }
 
                 lastCursor = cursor;
 
-                // Write to ring buffer
+                // Write decoded frames to ring buffer
                 if (frames_to_read > 0) {
-
                         ma_uint32 framesRemaining = (ma_uint32)frames_to_read;
                         ma_uint32 framesWritten = 0;
 
-                        while (framesRemaining > 0) {
-                                bool running = atomic_load(&sound->decode_thread_running);
-
-                                if (!running)
-                                        break;
-
+                        while (framesRemaining > 0 && atomic_load(&sound->decode_thread_running)) {
                                 ma_uint32 framesToWrite = framesRemaining;
                                 void *pWriteBuffer = NULL;
 
-                                ma_result wr = ma_pcm_rb_acquire_write(
-                                    &pcm_rb,
-                                    &framesToWrite,
-                                    &pWriteBuffer);
-
+                                ma_result wr = ma_pcm_rb_acquire_write(&pcm_rb, &framesToWrite, &pWriteBuffer);
                                 if (wr != MA_SUCCESS || framesToWrite == 0) {
-                                        cpu_relax();
+                                        // wait for space instead of busy spinning
+                                        pthread_mutex_lock(&sound->wake_mutex);
+                                        pthread_cond_wait(&sound->wake_cond, &sound->wake_mutex);
+                                        pthread_mutex_unlock(&sound->wake_mutex);
                                         continue;
                                 }
 
-                                memcpy(
-                                    pWriteBuffer,
-                                    temp + framesWritten * sound->channels,
-                                    framesToWrite * sound->channels * sizeof(float));
+                                memcpy(pWriteBuffer, temp + framesWritten * sound->channels,
+                                       framesToWrite * sound->channels * sizeof(float));
 
                                 ma_pcm_rb_commit_write(&pcm_rb, framesToWrite);
 
