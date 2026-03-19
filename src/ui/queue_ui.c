@@ -218,6 +218,7 @@ FileSystemEntry *enqueue_songs(FileSystemEntry *entry, FileSystemEntry **chosen_
 
                 shuffle_playlist(playlist);
                 set_song_to_start_from(NULL);
+                first_enqueued_entry = NULL;
         } else if (ps->nextSongNeedsRebuilding) {
                 reshuffle_playlist();
         }
