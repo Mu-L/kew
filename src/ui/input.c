@@ -47,7 +47,7 @@
 
 const int COOLDOWN_MS = 500;
 const int COOLDOWN2_MS = 100;
-const int COOLDOWN3_MS = 250;
+const int COOLDOWN3_MS = 100;
 const int COOLDOWNDIGITS_MS = 1500;
 const int MOUSE_DRAG = 32;
 const int MOUSE_CLICK = 0;
