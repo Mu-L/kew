@@ -432,9 +432,15 @@ void *decode_loop(void *arg)
 
                                 ma_result wr = ma_pcm_rb_acquire_write(&pcm_rb, &framesToWrite, &pWriteBuffer);
                                 if (wr != MA_SUCCESS || framesToWrite == 0) {
-                                        // wait for space instead of busy spinning
+                                        struct timespec ts;
+                                        clock_gettime(CLOCK_REALTIME, &ts);
+                                        ts.tv_nsec += 500000; // 0.5 ms
+                                        if (ts.tv_nsec >= 1000000000) {
+                                                ts.tv_sec++;
+                                                ts.tv_nsec -= 1000000000;
+                                        }
                                         pthread_mutex_lock(&sound->wake_mutex);
-                                        pthread_cond_wait(&sound->wake_cond, &sound->wake_mutex);
+                                        pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
                                         pthread_mutex_unlock(&sound->wake_mutex);
                                         continue;
                                 }
