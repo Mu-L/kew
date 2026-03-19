@@ -39,7 +39,6 @@ struct sound_system {
         ma_format format;
 
         ma_uint64 currentPCMFrame;
-        ma_uint64 totalFrames;
 
         ma_uint32 avg_bit_rate;
 
@@ -59,6 +58,7 @@ struct sound_system {
         atomic_bool pending_switch;
         atomic_bool switch_files;
         atomic_bool using_song_slot_A;
+        atomic_bool buffer_low; // true = we're in underrun-recovery mode
 #endif
 
         float volume;
