@@ -68,7 +68,35 @@ struct Event map_tb_key_to_event(struct tb_event *ev)
 
         TBKeyBinding *key_bindings = get_key_bindings();
 
+        for (size_t i = 0; i < keybinding_count; i++) {
+                TBKeyBinding *b = &key_bindings[i];
+
+                if (isupper((unsigned char)ev->ch)) {
+                        ev->mod |= TB_MOD_SHIFT;
+                        ev->ch = tolower(ev->ch);
+                }
+
+                bool keyMatch = (b->key && ev->key == b->key) || (b->ch && ev->ch == b->ch);
+                bool modsMatch = (b->mods == ev->mod);
+
+                if (keyMatch && modsMatch) {
+                        event.type = b->eventType;
+                        strncpy(event.args, b->args, sizeof(event.args));
+                        event.args[sizeof(event.args) - 1] = '\0';
+                        break;
+                }
+        }
+
+        return event;
+}
+
+struct Event handle_search_event(struct tb_event *ev)
+{
+        struct Event event = {0};
+        event.type = EVENT_NONE;
+
         AppState *state = get_app_state();
+
         if (state->currentView == SEARCH_VIEW) {
 
                 if (ev->key == TB_KEY_SPACE && ev->mod == 0)
@@ -105,27 +133,6 @@ struct Event map_tb_key_to_event(struct tb_event *ev)
                         event.type = EVENT_SEARCH;
                 }
 #endif
-        }
-
-        if (event.type == EVENT_NONE) {
-                for (size_t i = 0; i < keybinding_count; i++) {
-                        TBKeyBinding *b = &key_bindings[i];
-
-                        if (isupper((unsigned char)ev->ch)) {
-                                ev->mod |= TB_MOD_SHIFT;
-                                ev->ch = tolower(ev->ch);
-                        }
-
-                        bool keyMatch = (b->key && ev->key == b->key) || (b->ch && ev->ch == b->ch);
-                        bool modsMatch = (b->mods == ev->mod);
-
-                        if (keyMatch && modsMatch) {
-                                event.type = b->eventType;
-                                strncpy(event.args, b->args, sizeof(event.args));
-                                event.args[sizeof(event.args) - 1] = '\0';
-                                break;
-                        }
-                }
         }
 
         return event;
@@ -632,22 +639,36 @@ static gboolean on_tb_input(GIOChannel *source, GIOCondition cond, gpointer data
                 event.args[0] = '\0';
                 event.key[0] = '\0';
 
-                // Extract all events in the buffer
-                while (tb_peek_event(&ev, 0) == 0) {
+                AppState *state = get_app_state();
+                if (state->currentView == SEARCH_VIEW) {
+                        tb_peek_event(&ev, 0);
                         bool isMouseEvent = handle_mouse_event(&ev, &event);
-                        if (isMouseEvent || map_tb_key_to_event(&ev).type != EVENT_NONE) {
-                                last_ev = ev;
-                                found_event = true;
+
+                        if (!isMouseEvent) {
+                                event = handle_search_event(&ev);
+                                if (event.type == EVENT_NONE)
+                                        event = map_tb_key_to_event(&ev);
                         }
-                }
+                } else {
 
-                if (!found_event)
-                        return TRUE;
+                        // Extract all events in the buffer
+                        while (tb_peek_event(&ev, 0) == 0) {
+                                bool isMouseEvent = handle_mouse_event(&ev, &event);
+                                if (isMouseEvent || map_tb_key_to_event(&ev).type != EVENT_NONE) {
+                                        last_ev = ev;
+                                        found_event = true;
+                                }
+                        }
 
-                // Process only the last event
-                bool isMouseEvent = handle_mouse_event(&last_ev, &event);
-                if (!isMouseEvent) {
-                        event = map_tb_key_to_event(&last_ev);
+                        if (!found_event)
+                                return TRUE;
+
+                        // Process only the last event
+                        bool isMouseEvent = handle_mouse_event(&last_ev, &event);
+                        if (!isMouseEvent) {
+
+                                event = map_tb_key_to_event(&last_ev);
+                        }
                 }
 
                 if (isdigit(ev.ch) && event.type == EVENT_NONE) {
