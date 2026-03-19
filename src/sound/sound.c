@@ -171,7 +171,7 @@ bool is_valid_gain(double gain)
 static bool compute_replay_gain(double *out_gain_db)
 {
         bool result = false;
-        double gain_db = 0.0;
+        double gain_db = 0.0f;
 
         SongData *song = sound_get_current_song_data();
 
@@ -203,82 +203,13 @@ static bool compute_replay_gain(double *out_gain_db)
         return result;
 }
 
-static void apply_gain_to_interleaved_frames(void *raw_frames, ma_format format,
-                                             ma_uint64 frames_to_read, int channels,
-                                             double gain)
+static inline void
+apply_gain_f32(float *restrict samples,
+               ma_uint64 total_samples,
+               float gain)
 {
-        if (gain == 1.0) {
-                return; // No gain to apply
-        }
-
-        // Prevent multiplication overflow:
-        if (channels <= 0)
-                return;
-
-        if (frames_to_read > (UINT64_MAX / channels)) {
-                // Overflow would happen
-                return;
-        }
-
-        switch (format) {
-        case ma_format_f32: {
-                float *frames = (float *)raw_frames;
-                for (ma_uint64 i = 0; i < frames_to_read; ++i) {
-                        for (int ch = 0; ch < channels; ++ch) {
-                                ma_uint64 frame_index = i * channels + ch;
-                                float originalSample = frames[frame_index];
-                                double sample = (double)originalSample;
-
-                                sample *= gain;
-                                frames[frame_index] = (float)sample;
-                        }
-                }
-                break;
-        }
-
-        case ma_format_s16: {
-                ma_int16 *frames = (ma_int16 *)raw_frames;
-                for (ma_uint64 i = 0; i < frames_to_read; ++i) {
-                        for (int ch = 0; ch < channels; ++ch) {
-                                ma_uint64 frame_index = i * channels + ch;
-                                ma_int16 originalSample = frames[frame_index];
-                                double sample = (double)originalSample;
-
-                                sample *= gain;
-                                if (sample > 32767.0)
-                                        sample = 32767.0;
-                                else if (sample < -32768.0)
-                                        sample = -32768.0;
-
-                                frames[frame_index] = (ma_int16)sample;
-                        }
-                }
-                break;
-        }
-
-        case ma_format_s32: {
-                ma_int32 *frames = (ma_int32 *)raw_frames;
-                for (ma_uint64 i = 0; i < frames_to_read; ++i) {
-                        for (int ch = 0; ch < channels; ++ch) {
-                                ma_uint64 frame_index = i * channels + ch;
-                                ma_int32 originalSample = frames[frame_index];
-                                double sample = (double)originalSample;
-
-                                sample *= gain;
-                                if (sample > 2147483647.0)
-                                        sample = 2147483647.0;
-                                else if (sample < -2147483648.0)
-                                        sample = -2147483648.0;
-
-                                frames[frame_index] = (ma_int32)sample;
-                        }
-                }
-                break;
-        }
-
-        default:
-                // Unsupported format
-                break;
+        for (ma_uint64 i = 0; i < total_samples; i++) {
+                samples[i] *= gain;
         }
 }
 
@@ -315,12 +246,32 @@ void activate_switch(void)
         set_switch_files(true);
 }
 
-void execute_switch(void)
+void set_replay_gain(sound_system_t *sound)
+{
+        sound->gain_linear = 1.0f;
+
+        double gain_db = 0.0;
+        if (compute_replay_gain(&gain_db)) {
+                float g = (float)db_to_linear(gain_db);
+
+                if (g < 0.0001f)
+                        g = 0.0001f;
+                if (g > 10.0f)
+                        g = 10.0f;
+
+                sound->gain_linear = g;
+        }
+}
+
+void execute_switch(sound_system_t *sound)
 {
         set_switch_files(false);
         switch_decoder_index();
 
-        sound_s->currentPCMFrame = 0;
+        sound->currentPCMFrame = 0;
+        lastCursor = 0;
+
+        set_replay_gain(sound);
 
         set_seek_elapsed(0.0);
 
@@ -330,16 +281,29 @@ void execute_switch(void)
 void set_decode_thread_priority(pthread_t thread)
 {
 #if defined(__linux__) || defined(__FreeBSD__)
-    struct sched_param param = { .sched_priority = 1 };
-    if (pthread_setschedparam(thread, SCHED_RR, &param) != 0) {
-        setpriority(PRIO_PROCESS, 0, -5);
-    }
+        struct sched_param param = {.sched_priority = 1};
+        if (pthread_setschedparam(thread, SCHED_RR, &param) != 0) {
+                setpriority(PRIO_PROCESS, 0, -5);
+        }
 
 #elif defined(__APPLE__)
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 
 #elif defined(__ANDROID__)
-    setpriority(PRIO_PROCESS, 0, -8);
+        setpriority(PRIO_PROCESS, 0, -8);
+#endif
+}
+
+static inline void cpu_relax(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+        __asm__ volatile("pause" ::: "memory");
+#elif defined(__aarch64__) || defined(__arm__)
+        __asm__ volatile("yield" ::: "memory");
+#elif defined(__riscv)
+        __asm__ volatile("pause" ::: "memory");
+#else
+        sched_yield();
 #endif
 }
 
@@ -348,16 +312,23 @@ void *decode_loop(void *arg)
 {
         sound_system_t *sound = (sound_system_t *)arg;
 
-        float *temp = malloc(sound->chunk_frames * sound->channels * sizeof(float));
-        if (!temp)
-                goto done;
+        size_t tempSize = sound->chunk_frames * sound->channels * sizeof(float);
+
+        float *temp = NULL;
+
+        if (posix_memalign((void **)&temp, 64, tempSize) != 0) {
+                sound->decode_thread_active = false;
+                return NULL;
+        }
+
+        lastCursor = 0;
 
         set_decode_thread_priority(pthread_self());
 
         while (atomic_load(&sound->decode_thread_running)) {
 
                 // Activate switch
-                if (atomic_load(&sound->pending_switch)) {
+                if (atomic_load_explicit(&sound->pending_switch, memory_order_acquire)) {
                         atomic_store_explicit(&sound->pending_switch, false, memory_order_release);
                         atomic_store_explicit(&sound->decode_finished, false, memory_order_release);
                         activate_switch();
@@ -365,27 +336,46 @@ void *decode_loop(void *arg)
                 }
 
                 // Execute switch
-                if (atomic_load(&sound->switch_files)) {
+                if (atomic_load_explicit(&sound->switch_files, memory_order_acquire)) {
                         atomic_store(&sound->buffer_ready, 0);
                         atomic_store_explicit(&sound->decode_finished, false, memory_order_release);
-                        execute_switch();
+                        execute_switch(sound);
                         continue;
                 }
 
                 if (get_current_decoder_type() != get_current_decoder_decoder_type() ||
                     is_decoder_type_switch_reached()) {
-                        goto done;
+                        break;
                 }
 
-                while (ma_pcm_rb_available_write(&pcm_rb) < (ma_uint32)(sound->sample_rate / 2) &&
+                ma_uint32 threshold = sound->sample_rate / 2;
+                atomic_store(&sound->buffer_ready, 1);
+                pthread_mutex_lock(&sound->wake_mutex);
+                while (ma_pcm_rb_available_write(&pcm_rb) < threshold &&
                        atomic_load(&sound->decode_thread_running) &&
                        !atomic_load(&sound->switch_files) &&
                        !atomic_load(&sound->pending_switch)) {
 
-                        atomic_store(&sound->buffer_ready, 1);
+                        // Spin briefly for a few iterations
+                        int spins = 0;
+                        while (spins < 50 && ma_pcm_rb_available_write(&pcm_rb) < threshold) {
+                                cpu_relax();
+                                spins++;
+                        }
 
-                        c_sleep(2);
+                        // If still not enough space, sleep via timed wait (2ms)
+                        if (ma_pcm_rb_available_write(&pcm_rb) < threshold) {
+                                struct timespec ts;
+                                clock_gettime(CLOCK_MONOTONIC, &ts);
+                                ts.tv_nsec += 2000000; // 2ms
+                                if (ts.tv_nsec >= 1000000000) {
+                                        ts.tv_sec++;
+                                        ts.tv_nsec -= 1000000000;
+                                }
+                                pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
+                        }
                 }
+                pthread_mutex_unlock(&sound->wake_mutex);
 
                 // Pause
                 while (pb_is_paused() && atomic_load(&sound->decode_thread_running)) {
@@ -401,16 +391,11 @@ void *decode_loop(void *arg)
                 if (frames_to_decode > sound->chunk_frames)
                         frames_to_decode = sound->chunk_frames;
 
-                if (!atomic_load(&sound->decode_thread_running))
-                        goto done;
-
                 const CodecOps *ops = get_codec_ops(get_current_decoder_decoder_type());
                 void *decoder = get_current_decoder();
 
-                if (!decoder) {
-                        if (!atomic_load(&sound->decode_thread_running))
-                                goto done;
-                        c_sleep(1);
+                if (!decoder || !atomic_load(&sound->decode_thread_running)) {
+                        cpu_relax();
                         continue;
                 }
 
@@ -428,16 +413,11 @@ void *decode_loop(void *arg)
                 long long cursor = 0;
                 ops->get_cursor(decoder, &cursor);
 
-                double gain_db = 0.0;
-                if (get_current_decoder_decoder_type() == BUILTIN &&
-                    compute_replay_gain(&gain_db)) {
-
-                        apply_gain_to_interleaved_frames(
-                            temp,
-                            sound->format,
-                            frames_to_read,
-                            sound->channels,
-                            db_to_linear(gain_db));
+                // Apply Replay Gain
+                float gain = sound->gain_linear;
+                if (gain != 1.0f) {
+                        ma_uint64 total = frames_to_read * sound->channels;
+                        apply_gain_f32(temp, total, gain);
                 }
 
                 if (!atomic_load(&sound->pending_switch) &&
@@ -467,9 +447,10 @@ void *decode_loop(void *arg)
                         ma_uint32 framesWritten = 0;
 
                         while (framesRemaining > 0) {
+                                bool running = atomic_load(&sound->decode_thread_running);
 
-                                if (!atomic_load(&sound->decode_thread_running))
-                                        goto done;
+                                if (!running)
+                                        break;
 
                                 ma_uint32 framesToWrite = framesRemaining;
                                 void *pWriteBuffer = NULL;
@@ -479,28 +460,27 @@ void *decode_loop(void *arg)
                                     &framesToWrite,
                                     &pWriteBuffer);
 
-                                if (wr != MA_SUCCESS || framesToWrite == 0 || pWriteBuffer == NULL) {
-
-                                        sched_yield();
+                                if (wr != MA_SUCCESS || framesToWrite == 0) {
+                                        cpu_relax();
                                         continue;
                                 }
 
                                 memcpy(
                                     pWriteBuffer,
-                                    (float *)temp + framesWritten * sound->channels,
+                                    temp + framesWritten * sound->channels,
                                     framesToWrite * sound->channels * sizeof(float));
 
                                 ma_pcm_rb_commit_write(&pcm_rb, framesToWrite);
 
                                 framesWritten += framesToWrite;
                                 framesRemaining -= framesToWrite;
-
-                                atomic_store(&sound->buffer_ready, 1);
                         }
+
+                        if (framesWritten != 0)
+                                atomic_store(&sound->buffer_ready, 1);
                 }
         }
 
-done:
         free(temp);
         sound->decode_thread_active = false;
         return NULL;
@@ -516,27 +496,34 @@ void on_audio_frames(ma_device *device,
         (void)input;
 
         const ma_uint32 frameSize = sound_s->channels * sizeof(float);
-        const ma_uint32 low_threshold  = sound_s->sample_rate / 5;  // ~200ms
-        const ma_uint32 high_threshold = sound_s->sample_rate / 2;  // ~500m
+        const ma_uint32 low_threshold = sound_s->sample_rate / 5;  // ~200ms
+        const ma_uint32 high_threshold = sound_s->sample_rate / 2; // ~500m
 
         // Require minimum fill before playback
         ma_uint32 available = ma_pcm_rb_available_read(&pcm_rb);
 
-        if (atomic_load_explicit(&sound_s->buffer_low, memory_order_relaxed)) {
-                if (available < high_threshold) {
-                        memset(pOutput, 0, frameCount * frameSize);
-                        underrun_count++;
-                        return;
-                }
-                // Recovered, clear the flag and fall through to normal playback
+        bool low = available < low_threshold;
+        bool recover = available > high_threshold;
+
+        bool low_flag = atomic_load_explicit(&sound_s->buffer_low, memory_order_relaxed);
+
+        if (low_flag && !recover) {
+                memset(pOutput, 0, frameCount * frameSize);
+                underrun_count++;
+                return;
+        }
+
+        if (low_flag && recover) {
                 atomic_store_explicit(&sound_s->buffer_low, false, memory_order_relaxed);
-        } else if (available < low_threshold) {
-                // First time we notice the buffer is low: set flag but still play what we have
+        } else if (!low_flag && low) {
                 atomic_store_explicit(&sound_s->buffer_low, true, memory_order_relaxed);
         }
 
         ma_uint32 framesRemaining = frameCount;
         ma_uint32 totalFramesRead = 0;
+
+        uint8_t *out = (uint8_t *)pOutput;
+        uint8_t *writePtr = out;
 
         while (framesRemaining > 0) {
 
@@ -558,11 +545,12 @@ void on_audio_frames(ma_device *device,
                         break;
                 }
 
-                memcpy((uint8_t *)pOutput + totalFramesRead * frameSize,
-                       pReadBuffer,
-                       framesToRead * frameSize);
+                size_t bytesToCopy = framesToRead * frameSize;
+                memcpy(writePtr, pReadBuffer, bytesToCopy);
+                writePtr += bytesToCopy;
 
                 ma_pcm_rb_commit_read(&pcm_rb, framesToRead);
+                pthread_cond_signal(&sound_s->wake_cond);
 
                 totalFramesRead += framesToRead;
                 framesRemaining -= framesToRead;
@@ -796,6 +784,10 @@ int init_first_datasource(sound_system_t *sound)
         result = init_audio_data_from_codec_decoder(ops, decoder, sound);
         if (result < 0)
                 return -1;
+
+        sound->currentPCMFrame = 0;
+
+        set_replay_gain(sound);
 
         // BUILTIN MP3 special handling
         if (ops->decoder_type == BUILTIN) {

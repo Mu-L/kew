@@ -229,6 +229,8 @@ void cleanup_playback_device(void)
         ma_device_uninit(&device);
         memset(&device, 0, sizeof(device));
         device_initialized = false;
+        pthread_mutex_destroy(&sound_s->wake_mutex);
+        pthread_cond_destroy(&sound_s->wake_cond);
 }
 
 ma_device *get_device(void)
