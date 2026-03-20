@@ -35,7 +35,9 @@ Thank you @yuri-xyz for helping out with this.
 
 - Add option to disable the stripping of track numbers from file names in the library: stripTrackNumbers=0. By @episvr.
 
-- Audio subsystem has been reworked and improved structurally, which among other things should make the audio smoother when the computer is under heavy load. Lots of functions were removed/unified, and some issues fixed. by @ravachol.
+- Audio subsystem has been reworked and improved structurally, which among other things should make the audio smoother when the computer is under heavy load. Lots of functions were removed/unified, and some issues fixed. By @ravachol.
+
+- Now uses real_time scheduling SCHED_RR and a larger audio period size (300ms instead of 50ms) for smoother audio. By @ravachol.
 
 - Add AIFF support. Suggested by @brikk42. By @ravachol.
 
@@ -64,6 +66,8 @@ Thank you @yuri-xyz for helping out with this.
 - Improved and more efficient stripping of numbers on filenames. By @petoem.
 
 - Fixed segfault sometimes when pressing u for update. Found by @petoem. By @petoem.
+
+- Fixed a bug in the visualizer that used unneccessary amount of CPU. By @ravachol.
 
 #### Special Thanks
 

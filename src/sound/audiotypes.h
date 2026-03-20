@@ -31,7 +31,8 @@ struct sound_system {
         void *decoder;
         ma_device *device;
 
-        bool decode_thread_active; // FIXME should be atomic
+        bool decode_thread_active;
+        bool audio_thread_priority_set;
         int replay_gain_check_first; // 0 = track, 1 = album, 2 = disabled
         float gain_linear;
 

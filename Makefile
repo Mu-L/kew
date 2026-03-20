@@ -308,6 +308,10 @@ install: all
 		done; \
 	fi
 
+ifeq ($(shell uname), Linux)
+	@which setcap > /dev/null 2>&1 && sudo setcap cap_sys_nice+ep $(DESTDIR)$(PREFIX)/bin/kew
+endif
+
 .PHONY: uninstall
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/kew

@@ -178,7 +178,7 @@ int init_playback_device(ma_context *context, sound_system_t *sound,
         deviceConfig.sampleRate = sound->sample_rate;
         deviceConfig.dataCallback = data_callback;
         deviceConfig.pUserData = pUserData;
-        deviceConfig.periodSizeInMilliseconds = 50;
+        deviceConfig.periodSizeInMilliseconds = 300;
         deviceConfig.periods = 4;
 
         sound_s->sample_rate = sound->sample_rate;

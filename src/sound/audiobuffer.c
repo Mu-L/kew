@@ -18,8 +18,8 @@ static bool buffer_ready = false;
 
 static float audio_buffer[MAX_BUFFER_SIZE];
 
-#define VIZ_RB_SIZE 65536
-#define VIZ_RB_MASK (VIZ_RB_SIZE - 1)  // only valid if VIZ_RB_SIZE is power of two
+#define VIZ_RB_SIZE 262144
+#define VIZ_RB_MASK (VIZ_RB_SIZE - 1) // only valid if VIZ_RB_SIZE is power of two
 static float viz_rb[VIZ_RB_SIZE];
 static _Atomic int viz_rb_write = 0;
 static _Atomic int viz_rb_read = 0;
@@ -80,25 +80,33 @@ void prepare_vis_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels)
         ma_uint32 read  = atomic_load_explicit(&viz_rb_read, memory_order_relaxed);
         ma_uint32 available = (write - read + VIZ_RB_SIZE) % VIZ_RB_SIZE;
 
-        if (available < channels)
-                return;
-
         int want_fft_samples = (int)(fft_size_milliseconds * sample_rate / 1000.0f);
         fft_size = closest_power_of_two(want_fft_samples);
-        hop_size = closest_power_of_two((int)(fft_size * 0.25f));
         if (fft_size > MAX_BUFFER_SIZE)
                 fft_size = MAX_BUFFER_SIZE;
-        if (hop_size >= fft_size)
-                hop_size = fft_size / 2;
 
-        while (available >= channels && write_head < fft_size) {
+        ma_uint32 samples_per_frame = (ma_uint32)(sample_rate * 0.034f) * channels;
+        hop_size = (ma_uint32)(sample_rate * 0.034f);
+
+        if (available < samples_per_frame)
+                return;
+
+        // If lagging, skip ahead to stay in sync
+        ma_uint32 period_samples = (ma_uint32)(sample_rate * 0.300f) * channels;
+        if (available > period_samples) {
+                read = (read + (available - period_samples)) & VIZ_RB_MASK;
+                available = period_samples;
+        }
+
+        ma_uint32 to_consume = samples_per_frame;
+
+        while (to_consume >= channels && write_head < fft_size) {
                 float sum = 0.0f;
-                ma_uint32 pos = read % VIZ_RB_SIZE;
                 for (ma_uint32 ch = 0; ch < channels; ch++) {
-                        sum += viz_rb[pos + ch];
+                        sum += viz_rb[(read + ch) & VIZ_RB_MASK];
                 }
                 read += channels;
-                available -= channels;
+                to_consume -= channels;
                 audio_buffer[write_head++] = sum / channels;
 
                 if (write_head >= fft_size) {
@@ -106,6 +114,7 @@ void prepare_vis_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels)
                         memmove(audio_buffer, audio_buffer + hop_size,
                                 sizeof(float) * (fft_size - hop_size));
                         write_head -= hop_size;
+                        break;
                 }
         }
 

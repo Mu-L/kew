@@ -62,8 +62,6 @@ ma_pcm_rb pcm_rb;
 pthread_mutex_t rb_mutex;
 pthread_cond_t rb_cond;
 
-int underrun_count = 0;
-
 int create_audio_device(
     void *user_data,
     sound_system_t *sound,
@@ -282,28 +280,16 @@ void set_decode_thread_priority(pthread_t thread)
 {
 #if defined(__linux__) || defined(__FreeBSD__)
         struct sched_param param = {.sched_priority = 1};
-        if (pthread_setschedparam(thread, SCHED_RR, &param) != 0) {
-                setpriority(PRIO_PROCESS, 0, -5);
+        int ret = pthread_setschedparam(thread, SCHED_RR, &param);
+        if (ret != 0) {
+                fprintf(stderr, "pthread_setschedparam failed: %s\n", strerror(ret));
+                ret = setpriority(PRIO_PROCESS, 0, -5);
+                fprintf(stderr, "setpriority returned: %d (errno: %s)\n", ret, strerror(errno));
         }
-
 #elif defined(__APPLE__)
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-
 #elif defined(__ANDROID__)
         setpriority(PRIO_PROCESS, 0, -8);
-#endif
-}
-
-static inline void cpu_relax(void)
-{
-#if defined(__x86_64__) || defined(__i386__)
-        __asm__ volatile("pause" ::: "memory");
-#elif defined(__aarch64__) || defined(__arm__)
-        __asm__ volatile("yield" ::: "memory");
-#elif defined(__riscv)
-        __asm__ volatile("pause" ::: "memory");
-#else
-        sched_yield();
 #endif
 }
 
@@ -349,23 +335,14 @@ void *decode_loop(void *arg)
 
                 // Wait until ringbuffer has enough space
                 ma_uint32 threshold = sound->sample_rate / 2;
-
-                pthread_mutex_lock(&sound->wake_mutex);
                 while (ma_pcm_rb_available_write(&pcm_rb) < threshold &&
                        atomic_load(&sound->decode_thread_running) &&
                        !atomic_load(&sound->switch_files) &&
                        !atomic_load(&sound->pending_switch)) {
 
-                        struct timespec ts;
-                        clock_gettime(CLOCK_REALTIME, &ts);
-                        ts.tv_nsec += 2000000; // 2ms
-                        if (ts.tv_nsec >= 1000000000) {
-                                ts.tv_sec++;
-                                ts.tv_nsec -= 1000000000;
-                        }
-                        pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
+                        struct timespec ts = {0, 2000000}; // 2ms
+                        nanosleep(&ts, NULL);
                 }
-                pthread_mutex_unlock(&sound->wake_mutex);
 
                 // Handle pause
                 while (pb_is_paused() && atomic_load(&sound->decode_thread_running)) {
@@ -439,17 +416,10 @@ void *decode_loop(void *arg)
 
                                 if (wr != MA_SUCCESS || framesToWrite == 0) {
                                         // Wait briefly if ring buffer is full or failed
-                                        struct timespec ts;
-                                        clock_gettime(CLOCK_REALTIME, &ts);
-                                        ts.tv_nsec += 500000; // 0.5 ms
-                                        if (ts.tv_nsec >= 1000000000) {
-                                                ts.tv_sec++;
-                                                ts.tv_nsec -= 1000000000;
-                                        }
-                                        pthread_mutex_lock(&sound->wake_mutex);
-                                        if (atomic_load(&sound->decode_thread_running))
-                                                pthread_cond_timedwait(&sound->wake_cond, &sound->wake_mutex, &ts);
-                                        pthread_mutex_unlock(&sound->wake_mutex);
+
+                                        struct timespec ts = {0, 500000}; // 0.5ms
+                                        nanosleep(&ts, NULL);
+
                                         continue;
                                 }
 
@@ -457,6 +427,7 @@ void *decode_loop(void *arg)
                                     pWriteBuffer,
                                     temp + framesWritten * sound->channels,
                                     framesToWrite * sound->channels * sizeof(float));
+
                                 ma_pcm_rb_commit_write(&pcm_rb, framesToWrite);
 
                                 framesWritten += framesToWrite;
@@ -479,47 +450,49 @@ void on_audio_frames(ma_device *device,
                      const void *input,
                      ma_uint32 frameCount)
 {
-    (void)device;
-    (void)input;
+        (void)device;
+        (void)input;
 
-    const ma_uint32 frameSize = sound_s->channels * sizeof(float);
-    ma_uint32 framesRemaining = frameCount;
-    uint8_t *writePtr = (uint8_t *)pOutput;
-
-    atomic_fetch_add_explicit(&sound_s->track_frames_sent, frameCount, memory_order_relaxed);
-
-    while (framesRemaining > 0) {
-        ma_uint32 framesToRead = framesRemaining;
-        void *pReadBuffer = NULL;
-
-        ma_result result = ma_pcm_rb_acquire_read(&pcm_rb, &framesToRead, &pReadBuffer);
-
-        if (result != MA_SUCCESS || framesToRead == 0 || pReadBuffer == NULL) {
-            // Fill remaining frames with silence
-            memset(writePtr, 0, framesRemaining * frameSize);
-            break;
+        if (!sound_s->audio_thread_priority_set) {
+                set_decode_thread_priority(pthread_self());
+                sound_s->audio_thread_priority_set = MA_TRUE;
         }
 
-        size_t bytesToCopy = framesToRead * frameSize;
-        memcpy(writePtr, pReadBuffer, bytesToCopy);
-        ma_pcm_rb_commit_read(&pcm_rb, framesToRead);
+        const ma_uint32 frameSize = sound_s->channels * sizeof(float);
+        ma_uint32 framesRemaining = frameCount;
+        uint8_t *writePtr = (uint8_t *)pOutput;
 
-        writePtr += bytesToCopy;
-        framesRemaining -= framesToRead;
-    }
+        atomic_fetch_add_explicit(&sound_s->track_frames_sent, frameCount, memory_order_relaxed);
 
-    // Check if we need to switch
-    if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
-        uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
-        uint64_t boundary = atomic_load_explicit(&sound_s->track_end_frame, memory_order_relaxed);
+        while (framesRemaining > 0) {
+                ma_uint32 framesToRead = framesRemaining;
+                void *pReadBuffer = NULL;
 
-        if (played >= boundary) {
-            atomic_store_explicit(&sound_s->pending_switch, true, memory_order_relaxed);
+                ma_result result = ma_pcm_rb_acquire_read(&pcm_rb, &framesToRead, &pReadBuffer);
+
+                if (result != MA_SUCCESS || framesToRead == 0 || pReadBuffer == NULL) {
+                        memset(writePtr, 0, framesRemaining * frameSize);
+                        break;
+                }
+
+                size_t bytesToCopy = framesToRead * frameSize;
+                memcpy(writePtr, pReadBuffer, bytesToCopy);
+                ma_pcm_rb_commit_read(&pcm_rb, framesToRead);
+
+                writePtr += bytesToCopy;
+                framesRemaining -= framesToRead;
         }
-    }
 
-    // Spectrum visualizer
-    viz_rb_push(pOutput, frameCount, sound_s->channels);
+        if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
+                uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
+                uint64_t boundary = atomic_load_explicit(&sound_s->track_end_frame, memory_order_relaxed);
+
+                if (played >= boundary) {
+                        atomic_store_explicit(&sound_s->pending_switch, true, memory_order_relaxed);
+                }
+        }
+
+        viz_rb_push(pOutput, frameCount, sound_s->channels);
 }
 
 int handle_codec(
@@ -737,6 +710,7 @@ int init_first_datasource(sound_system_t *sound)
                 return -1;
 
         sound->currentPCMFrame = 0;
+        sound->audio_thread_priority_set = MA_FALSE;
 
         set_replay_gain(sound);
 
