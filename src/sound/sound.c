@@ -334,7 +334,7 @@ void *decode_loop(void *arg)
                 }
 
                 // Wait until ringbuffer has enough space
-                ma_uint32 threshold = sound->sample_rate / 2;
+                ma_uint32 threshold = sound->sample_rate / 10;
                 while (ma_pcm_rb_available_write(&pcm_rb) < threshold &&
                        atomic_load(&sound->decode_thread_running) &&
                        !atomic_load(&sound->switch_files) &&
@@ -419,7 +419,7 @@ void *decode_loop(void *arg)
                                         nanosleep(&ts, NULL);
                                         continue;
                                 }
-                                
+
                                 if (framesToWrite == 0)
                                         continue;
 
