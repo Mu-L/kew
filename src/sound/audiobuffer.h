@@ -94,7 +94,7 @@ int32_t unpack_s24(const ma_uint8 *p);
  * @param channels The number of channels.
  *
  */
-void viz_rb_push(const float *src, ma_uint32 frames, ma_uint32 channels);
+void visualizer_ringbuffer_push(const float *src, ma_uint32 frames, ma_uint32 channels);
 
 /**
  * @brief Prepares the audio buffer for the spectrum visualizer
@@ -103,6 +103,6 @@ void viz_rb_push(const float *src, ma_uint32 frames, ma_uint32 channels);
  * @param channels The number of channels.
  *
  */
-void prepare_vis_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels);
+void prepare_visualizer_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels);
 
 #endif

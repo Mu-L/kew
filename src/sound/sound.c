@@ -488,7 +488,7 @@ void on_audio_frames(ma_device *device,
                 }
         }
 
-        viz_rb_push(pOutput, frameCount, sound_s->channels);
+        visualizer_ringbuffer_push(pOutput, frameCount, sound_s->channels);
 }
 
 int handle_codec(

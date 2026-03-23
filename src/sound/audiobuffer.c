@@ -51,7 +51,7 @@ ma_int32 unpack_s24(const ma_uint8 *p)
         return sample;
 }
 
-void viz_rb_push(const float *src, ma_uint32 frames, ma_uint32 channels)
+void visualizer_ringbuffer_push(const float *src, ma_uint32 frames, ma_uint32 channels)
 {
         ma_uint32 write = atomic_load_explicit(&viz_rb_write, memory_order_relaxed);
         ma_uint32 total = frames * channels;
@@ -74,7 +74,7 @@ void viz_rb_push(const float *src, ma_uint32 frames, ma_uint32 channels)
         atomic_store_explicit(&viz_rb_write, (write + total) & VIZ_RB_MASK, memory_order_release);
 }
 
-void prepare_vis_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels)
+void prepare_visualizer_audiobuffer(ma_uint32 sample_rate, ma_uint32 channels)
 {
         ma_uint32 write = atomic_load_explicit(&viz_rb_write, memory_order_acquire);
         ma_uint32 read  = atomic_load_explicit(&viz_rb_read, memory_order_relaxed);

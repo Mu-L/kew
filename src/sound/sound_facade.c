@@ -375,7 +375,7 @@ sound_result_t sound_system_update_audio_buffer(const sound_system_t *system)
         if (!system)
                 return SOUND_ERROR_NOT_INITIALIZED;
 
-        prepare_vis_audiobuffer(system->sample_rate, system->channels);
+        prepare_visualizer_audiobuffer(system->sample_rate, system->channels);
 
         return SOUND_OK;
 }
