@@ -388,7 +388,7 @@ void *decode_loop(void *arg)
                                 atomic_store(&sound->pending_switch, true);
                                 reset_ring_buffer();
                         } else {
-                                int sent = atomic_load(&sound->track_frames_sent) +
+                                long long sent = atomic_load(&sound->track_frames_sent) +
                                            ma_pcm_rb_available_read(&pcm_rb);
                                 atomic_store_explicit(&sound->track_end_frame, sent, memory_order_release);
                                 atomic_store_explicit(&sound->decode_finished, true, memory_order_release);
@@ -462,8 +462,6 @@ void on_audio_frames(ma_device *device,
         ma_uint32 framesRemaining = frameCount;
         uint8_t *writePtr = (uint8_t *)pOutput;
 
-        atomic_fetch_add_explicit(&sound_s->track_frames_sent, frameCount, memory_order_relaxed);
-
         while (framesRemaining > 0) {
                 ma_uint32 framesToRead = framesRemaining;
                 void *pReadBuffer = NULL;
@@ -482,6 +480,9 @@ void on_audio_frames(ma_device *device,
                 writePtr += bytesToCopy;
                 framesRemaining -= framesToRead;
         }
+
+        ma_uint32 framesActuallyRead = frameCount - framesRemaining;
+        atomic_fetch_add_explicit(&sound_s->track_frames_sent, framesActuallyRead, memory_order_relaxed);
 
         if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
                 uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
