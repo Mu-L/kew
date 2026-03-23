@@ -482,7 +482,7 @@ void on_audio_frames(ma_device *device,
         }
 
         ma_uint32 framesActuallyRead = frameCount - framesRemaining;
-        atomic_fetch_add_explicit(&sound_s->track_frames_sent, framesActuallyRead, memory_order_relaxed);
+        atomic_fetch_add_explicit(&sound_s->track_frames_sent, (long long)framesActuallyRead, memory_order_relaxed);
 
         if (atomic_load_explicit(&sound_s->decode_finished, memory_order_acquire)) {
                 uint64_t played = atomic_load_explicit(&sound_s->track_frames_sent, memory_order_relaxed);
