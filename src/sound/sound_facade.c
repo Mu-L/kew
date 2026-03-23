@@ -49,9 +49,6 @@ sound_result_t sound_system_create(sound_system_t **out_system)
         sound_s->volume = get_current_volume();
         sound_s->state = SOUND_STATE_STOPPED;
 
-        pthread_mutex_init(&sound_s->wake_mutex, NULL);
-        pthread_cond_init(&sound_s->wake_cond, NULL);
-
         result = sound_create_audio_device();
 
         if (result < 0) {

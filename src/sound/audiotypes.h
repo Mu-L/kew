@@ -36,9 +36,6 @@ struct sound_system {
         int replay_gain_check_first; // 0 = track, 1 = album, 2 = disabled
         float gain_linear;
 
-        pthread_mutex_t wake_mutex;
-        pthread_cond_t wake_cond;
-
         ma_uint32 channels;
         ma_uint32 sample_rate;
         ma_format format;

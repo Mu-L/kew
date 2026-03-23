@@ -47,8 +47,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define MIN_WRITE_THRESHOLD (CHUNK / 4)
-
 static ma_context context;
 static bool context_initialized = false;
 long long lastCursor = 0;
@@ -59,8 +57,6 @@ sound_system_t *sound_s = NULL;
 sound_playback_repeat_state_t repeat_state = SOUND_STATE_REPEAT_OFF;
 
 ma_pcm_rb pcm_rb;
-pthread_mutex_t rb_mutex;
-pthread_cond_t rb_cond;
 
 int create_audio_device(
     void *user_data,
@@ -332,7 +328,7 @@ void *decode_loop(void *arg)
                 }
 
                 // Wait until ringbuffer has enough space
-                ma_uint32 threshold = sound->sample_rate / 10;
+                ma_uint32 threshold = sound->chunk_frames * 4; // 400ms worth of space
                 while (ma_pcm_rb_available_write(&pcm_rb) < threshold &&
                        atomic_load(&sound->decode_thread_running) &&
                        !atomic_load(&sound->switch_files) &&

@@ -209,10 +209,6 @@ void stop_decode_thread(void)
 {
         atomic_store(&sound_s->decode_thread_running, false);
 
-        pthread_mutex_lock(&sound_s->wake_mutex);
-        pthread_cond_broadcast(&sound_s->wake_cond);
-        pthread_mutex_unlock(&sound_s->wake_mutex);
-
         if (sound_s->decode_thread_active) {
                 pthread_join(sound_s->decode_thread, NULL);
                 sound_s->decode_thread_active = false;
@@ -233,8 +229,6 @@ void cleanup_playback_device(void)
         ma_device_uninit(&device);
         memset(&device, 0, sizeof(device));
         device_initialized = false;
-        pthread_mutex_destroy(&sound_s->wake_mutex);
-        pthread_cond_destroy(&sound_s->wake_cond);
 }
 
 ma_device *get_device(void)
