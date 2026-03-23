@@ -340,7 +340,7 @@ void *decode_loop(void *arg)
                        !atomic_load(&sound->switch_files) &&
                        !atomic_load(&sound->pending_switch)) {
 
-                        struct timespec ts = {0, 2000000}; // 2ms
+                        struct timespec ts = {0, 500000};
                         nanosleep(&ts, NULL);
                 }
 
