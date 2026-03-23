@@ -389,7 +389,7 @@ void *decode_loop(void *arg)
                                 reset_ring_buffer();
                         } else {
                                 long long sent = atomic_load(&sound->track_frames_sent) +
-                                           ma_pcm_rb_available_read(&pcm_rb);
+                                                 ma_pcm_rb_available_read(&pcm_rb);
                                 atomic_store_explicit(&sound->track_end_frame, sent, memory_order_release);
                                 atomic_store_explicit(&sound->decode_finished, true, memory_order_release);
                         }
@@ -414,14 +414,14 @@ void *decode_loop(void *arg)
                                 void *pWriteBuffer = NULL;
                                 ma_result wr = ma_pcm_rb_acquire_write(&pcm_rb, &framesToWrite, &pWriteBuffer);
 
-                                if (wr != MA_SUCCESS || framesToWrite == 0) {
-                                        // Wait briefly if ring buffer is full or failed
-
-                                        struct timespec ts = {0, 500000}; // 0.5ms
+                                if (wr != MA_SUCCESS) {
+                                        struct timespec ts = {0, 500000};
                                         nanosleep(&ts, NULL);
-
                                         continue;
                                 }
+                                
+                                if (framesToWrite == 0)
+                                        continue;
 
                                 memcpy(
                                     pWriteBuffer,
