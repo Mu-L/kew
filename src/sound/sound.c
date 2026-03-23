@@ -122,7 +122,6 @@ static bool execute_seek(ma_decoder *decoder, ma_uint64 targetFrame, const Codec
 
         if (result == MA_SUCCESS) {
                 ma_pcm_rb_reset(&pcm_rb);
-                atomic_store(&sound_s->buffer_ready, 0);
                 atomic_store(&sound_s->decode_finished, false);
         }
 
@@ -321,7 +320,6 @@ void *decode_loop(void *arg)
 
                 // Handle file switch
                 if (atomic_load_explicit(&sound->switch_files, memory_order_acquire)) {
-                        atomic_store(&sound->buffer_ready, 0);
                         atomic_store_explicit(&sound->decode_finished, false, memory_order_release);
                         execute_switch(sound);
                         continue;
@@ -433,9 +431,6 @@ void *decode_loop(void *arg)
                                 framesWritten += framesToWrite;
                                 framesRemaining -= framesToWrite;
                         }
-
-                        if (framesWritten != 0)
-                                atomic_store(&sound->buffer_ready, 1);
                 }
         }
 
@@ -589,7 +584,6 @@ int handle_codec(
                 set_decoder_type_switch_reached(false);
 
                 // Reset buffer state for new song
-                atomic_store(&sound_s->buffer_ready, 0);
                 atomic_store(&sound_s->decode_thread_running, true);
                 sound_s->decode_thread_active = true;
                 pthread_create(&sound_s->decode_thread,
@@ -736,7 +730,6 @@ int init_ring_buffer(sound_system_t *sound)
         // 6 seconds of buffer regardless of sample rate
         ma_uint32 rbFrames = sound->sample_rate * 6;
 
-        atomic_store(&sound->buffer_ready, 0);
         atomic_store(&sound->decode_finished, false);
         atomic_store(&sound->pending_switch, false);
 

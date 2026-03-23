@@ -56,7 +56,6 @@ struct sound_system {
 #ifndef __cplusplus
         atomic_llong track_frames_sent;
         atomic_llong track_end_frame;
-        atomic_bool buffer_ready;
         atomic_bool end_of_list_reached;
         atomic_bool decode_thread_running;
         atomic_bool decode_finished;
